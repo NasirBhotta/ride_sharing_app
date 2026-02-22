@@ -33,6 +33,7 @@ class AuthRepository {
       );
 
       if (savedRole == null) {
+        await _auth.signOut();
         throw const AuthFailure('Account role is missing. Contact support.');
       }
 

@@ -39,6 +39,8 @@ class _RoleSignInFormState extends State<RoleSignInForm> {
         password: _passwordController.text,
         role: widget.role,
       );
+      if (!mounted) return;
+      Navigator.of(context).popUntil((route) => route.isFirst);
     } on AuthFailure catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
