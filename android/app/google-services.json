@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "1027504610760",
+    "project_id": "lab12-d8166",
+    "storage_bucket": "lab12-d8166.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1027504610760:android:5fc4bbea2798b83737f4fd",
+        "android_client_info": {
+          "package_name": "com.example.lab_12"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDokWAEammXOAyow94XdZ-CC1N6u_mCJ1k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1027504610760:android:910e8ba49a45f41737f4fd",
+        "android_client_info": {
+          "package_name": "com.example.ride_sharing_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDokWAEammXOAyow94XdZ-CC1N6u_mCJ1k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
