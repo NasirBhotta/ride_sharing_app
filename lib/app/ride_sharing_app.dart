@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../features/auth/presentation/auth_gate.dart';
+import 'theme/app_theme.dart';
 
 class RideSharingApp extends StatelessWidget {
   const RideSharingApp({super.key});
@@ -9,9 +10,10 @@ class RideSharingApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Ride Sharing App',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-      ),
+      debugShowCheckedModeBanner: false,
+      themeMode: ThemeMode.system,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
       home: const AuthGate(),
     );
   }
