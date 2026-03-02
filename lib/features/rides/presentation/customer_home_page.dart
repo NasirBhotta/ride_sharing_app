@@ -2,13 +2,18 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../../../app/config/maps_config.dart';
 import '../../auth/data/auth_repository.dart';
 import '../data/ride_repository.dart';
+import '../domain/ride_message.dart';
 import '../domain/ride_request.dart';
 import '../domain/vehicle_type.dart';
 import 'widgets/ride_location_fields.dart';
@@ -22,12 +27,18 @@ class CustomerHomePage extends StatefulWidget {
 }
 
 class _CustomerHomePageState extends State<CustomerHomePage> {
+  static const _initialRadiusKm = 2.0;
+  static const _radiusStepKm = 1.0;
+  static const _maxRadiusKm = 8.0;
+  static const _radiusStepInterval = Duration(seconds: 30);
+
   final _rideRepository = RideRepository();
   final _authRepository = AuthRepository();
   final _pickupController = TextEditingController(
     text: 'Detecting location...',
   );
   final _dropoffController = TextEditingController();
+  final _messageController = TextEditingController();
 
   GoogleMapController? _mapController;
   VehicleType _selectedVehicle = VehicleType.car;
@@ -39,8 +50,15 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   String? _activeRideId;
   RideRequest? _activeRide;
   StreamSubscription<RideRequest>? _rideSubscription;
+  StreamSubscription<Position>? _positionSubscription;
+  Timer? _radiusTimer;
+  double _searchRadiusKm = _initialRadiusKm;
+
   bool _isRequesting = false;
   bool _isCancelling = false;
+  bool _loadingRoute = false;
+
+  Set<Polyline> _polylines = {};
 
   static const _fallbackLocation = LatLng(37.42796133580664, -122.085749655962);
 
@@ -54,8 +72,11 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   void dispose() {
     _pickupController.dispose();
     _dropoffController.dispose();
+    _messageController.dispose();
     _mapController?.dispose();
     _rideSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _radiusTimer?.cancel();
     super.dispose();
   }
 
@@ -214,6 +235,104 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     await _mapController?.animateCamera(CameraUpdate.newLatLngZoom(target, 15));
   }
 
+  Future<void> _fitMapToBounds(LatLng a, LatLng b) async {
+    final bounds = LatLngBounds(
+      southwest: LatLng(
+        min(a.latitude, b.latitude),
+        min(a.longitude, b.longitude),
+      ),
+      northeast: LatLng(
+        max(a.latitude, b.latitude),
+        max(a.longitude, b.longitude),
+      ),
+    );
+    await _mapController?.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 64),
+    );
+  }
+
+  Future<void> _updateDirectionsForRide(RideRequest ride) async {
+    if (MapsConfig.directionsApiKey == 'YOUR_GOOGLE_DIRECTIONS_API_KEY') {
+      return;
+    }
+
+    LatLng? origin;
+    LatLng? destination;
+
+    if (ride.status == RideStatus.booked) {
+      if (ride.riderLat != null &&
+          ride.riderLng != null &&
+          ride.pickupLat != null &&
+          ride.pickupLng != null) {
+        origin = LatLng(ride.riderLat!, ride.riderLng!);
+        destination = LatLng(ride.pickupLat!, ride.pickupLng!);
+      }
+    } else if (ride.status == RideStatus.inProgress) {
+      if (ride.pickupLat != null &&
+          ride.pickupLng != null &&
+          ride.dropoffLat != null &&
+          ride.dropoffLng != null) {
+        origin = LatLng(ride.pickupLat!, ride.pickupLng!);
+        destination = LatLng(ride.dropoffLat!, ride.dropoffLng!);
+      }
+    } else {
+      _clearPolylines();
+      return;
+    }
+
+    if (origin == null || destination == null) {
+      _clearPolylines();
+      return;
+    }
+
+    setState(() => _loadingRoute = true);
+    final points = PolylinePoints();
+    late final PolylineResult result;
+    try {
+      result = await points.getRouteBetweenCoordinates(
+        request: PolylineRequest(
+          origin: PointLatLng(origin.latitude, origin.longitude),
+          destination: PointLatLng(destination.latitude, destination.longitude),
+          mode: TravelMode.driving,
+        ),
+        googleApiKey: MapsConfig.directionsApiKey,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingRoute = false);
+      return;
+    }
+
+    if (!mounted) return;
+    if (result.points.isEmpty) {
+      setState(() {
+        _polylines = {};
+        _loadingRoute = false;
+      });
+      return;
+    }
+
+    final polyline = Polyline(
+      polylineId: const PolylineId('route'),
+      color: Theme.of(context).colorScheme.primary,
+      width: 6,
+      points: result.points
+          .map((p) => LatLng(p.latitude, p.longitude))
+          .toList(growable: false),
+    );
+
+    setState(() {
+      _polylines = {polyline};
+      _loadingRoute = false;
+    });
+  }
+
+  void _clearPolylines() {
+    if (_polylines.isNotEmpty) {
+      setState(() => _polylines = {});
+    }
+  }
+
   double _toRad(double degree) => degree * pi / 180;
 
   double _haversineKm(LatLng a, LatLng b) {
@@ -251,8 +370,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
             setState(() => _activeRide = ride);
 
             final statusMsg = switch (ride.status) {
-              RideStatus.accepted => 'Driver accepted your ride.',
-              RideStatus.inProgress => 'Your ride is in progress.',
+              RideStatus.booked => 'Driver booked your ride.',
+              RideStatus.arrived => 'Driver has arrived.',
+              RideStatus.inProgress => 'Ride in progress.',
               RideStatus.completed => 'Ride completed.',
               RideStatus.cancelled => 'Ride cancelled.',
               _ => null,
@@ -264,9 +384,23 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               ).showSnackBar(SnackBar(content: Text(statusMsg)));
             }
 
+            unawaited(_updateDirectionsForRide(ride));
+
+            final riderLat = ride.riderLat;
+            final riderLng = ride.riderLng;
+            if (_currentLocation != null &&
+                riderLat != null &&
+                riderLng != null) {
+              unawaited(
+                _fitMapToBounds(_currentLocation!, LatLng(riderLat, riderLng)),
+              );
+            }
+
             if (ride.status == RideStatus.completed ||
                 ride.status == RideStatus.cancelled) {
               _rideSubscription?.cancel();
+              _radiusTimer?.cancel();
+              _positionSubscription?.cancel();
               setState(() {
                 _activeRideId = null;
                 _activeRide = null;
@@ -280,6 +414,49 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
             );
           },
         );
+  }
+
+  void _startRadiusExpansion(String rideId) {
+    _radiusTimer?.cancel();
+    _searchRadiusKm = _initialRadiusKm;
+    _radiusTimer = Timer.periodic(_radiusStepInterval, (timer) async {
+      final ride = _activeRide;
+      if (ride == null || ride.status != RideStatus.requested) {
+        timer.cancel();
+        return;
+      }
+      if (_searchRadiusKm >= _maxRadiusKm) {
+        timer.cancel();
+        return;
+      }
+      _searchRadiusKm = min(_searchRadiusKm + _radiusStepKm, _maxRadiusKm);
+      await _rideRepository.expandSearchRadius(
+        rideId: rideId,
+        newRadiusKm: _searchRadiusKm,
+        maxRadiusKm: _maxRadiusKm,
+      );
+      if (mounted) setState(() {});
+    });
+  }
+
+  void _startCustomerLocationUpdates(String rideId) {
+    _positionSubscription?.cancel();
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      ),
+    ).listen((position) {
+      final latLng = LatLng(position.latitude, position.longitude);
+      _currentLocation = latLng;
+      if (_activeRideId != null) {
+        _rideRepository.updateCustomerLocation(
+          rideId: rideId,
+          lat: latLng.latitude,
+          lng: latLng.longitude,
+        );
+      }
+    });
   }
 
   Future<void> _requestRide() async {
@@ -298,6 +475,15 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       if (!ok) return;
     }
 
+    if (_currentLocation == null || _dropoffLatLng == null) {
+      if (!mounted) return;
+      // ignore: use_build_context_synchronously
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pickup/dropoff not ready yet.')),
+      );
+      return;
+    }
+
     setState(() => _isRequesting = true);
     try {
       final request = RideRequest(
@@ -311,13 +497,29 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         estimatedFare: _fareFor(_selectedVehicle),
         distanceKm: _distanceKm,
         createdAt: null,
+        pickupLat: _currentLocation!.latitude,
+        pickupLng: _currentLocation!.longitude,
+        dropoffLat: _dropoffLatLng!.latitude,
+        dropoffLng: _dropoffLatLng!.longitude,
+        customerLat: _currentLocation!.latitude,
+        customerLng: _currentLocation!.longitude,
+        riderLat: null,
+        riderLng: null,
+        searchRadiusKm: _initialRadiusKm,
+        maxRadiusKm: _maxRadiusKm,
       );
 
       final rideId = await _rideRepository.requestRide(request);
 
       if (!mounted) return;
-      setState(() => _activeRideId = rideId);
+      setState(() {
+        _activeRideId = rideId;
+        _searchRadiusKm = _initialRadiusKm;
+      });
+
       _startWatchingRide(rideId);
+      _startRadiusExpansion(rideId);
+      _startCustomerLocationUpdates(rideId);
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -365,6 +567,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     setState(() => _isCancelling = true);
     try {
       await _rideRepository.cancelRide(_activeRideId!);
+      _clearPolylines();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -375,12 +578,31 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     }
   }
 
+  Future<void> _sendMessage() async {
+    final rideId = _activeRideId;
+    final user = FirebaseAuth.instance.currentUser;
+    if (rideId == null || user == null) return;
+
+    final text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    _messageController.clear();
+    await _rideRepository.sendMessage(
+      rideId: rideId,
+      senderId: user.uid,
+      senderRole: 'customer',
+      text: text,
+    );
+  }
+
   bool get _hasActiveRide => _activeRideId != null;
 
   String get _statusLabel {
     return switch (_activeRide?.status) {
-      RideStatus.requested => 'Waiting for a driver...',
-      RideStatus.accepted => 'Driver is on the way.',
+      RideStatus.requested =>
+        'Searching nearby drivers (${_searchRadiusKm.toStringAsFixed(0)} km)...',
+      RideStatus.booked => 'Driver booked. On the way.',
+      RideStatus.arrived => 'Driver has arrived.',
       RideStatus.inProgress => 'Ride in progress.',
       RideStatus.completed => 'Ride completed.',
       RideStatus.cancelled => 'Ride cancelled.',
@@ -390,7 +612,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   Color _statusColor(ThemeData theme) {
     return switch (_activeRide?.status) {
-      RideStatus.accepted => Colors.green,
+      RideStatus.booked => Colors.green,
+      RideStatus.arrived => theme.colorScheme.primary,
       RideStatus.inProgress => theme.colorScheme.primary,
       RideStatus.cancelled => theme.colorScheme.error,
       _ => theme.colorScheme.secondary,
@@ -401,6 +624,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final mapCenter = _currentLocation ?? _fallbackLocation;
+    final riderLat = _activeRide?.riderLat;
+    final riderLng = _activeRide?.riderLng;
 
     return Scaffold(
       appBar: AppBar(
@@ -425,12 +650,17 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               ClipRRect(
                 borderRadius: BorderRadius.circular(18),
                 child: SizedBox(
-                  height: 220,
+                  height: 240,
                   child: GoogleMap(
                     initialCameraPosition: CameraPosition(
                       target: mapCenter,
                       zoom: 14,
                     ),
+                    gestureRecognizers: {
+                      Factory<OneSequenceGestureRecognizer>(
+                        () => EagerGestureRecognizer(),
+                      ),
+                    },
                     onMapCreated: (controller) {
                       _mapController = controller;
                       if (_currentLocation != null) {
@@ -440,7 +670,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                     onTap: _onMapTapped,
                     myLocationEnabled: _currentLocation != null,
                     myLocationButtonEnabled: true,
-                    zoomControlsEnabled: false,
+                    zoomControlsEnabled: true,
+                    polylines: _polylines,
                     markers: {
                       Marker(
                         markerId: const MarkerId('pickup'),
@@ -456,12 +687,26 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                             BitmapDescriptor.hueAzure,
                           ),
                         ),
+                      if (riderLat != null && riderLng != null)
+                        Marker(
+                          markerId: const MarkerId('rider'),
+                          position: LatLng(riderLat, riderLng),
+                          infoWindow: const InfoWindow(title: 'Driver'),
+                          icon: BitmapDescriptor.defaultMarkerWithHue(
+                            BitmapDescriptor.hueGreen,
+                          ),
+                        ),
                     },
                   ),
                 ),
               ),
               const SizedBox(height: 16),
               if (_loadingLocation)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
+              if (_loadingRoute)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 12),
                   child: LinearProgressIndicator(minHeight: 2),
@@ -481,7 +726,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   child: Row(
                     children: [
                       if (_activeRide?.status == RideStatus.requested ||
-                          _activeRide?.status == RideStatus.accepted)
+                          _activeRide?.status == RideStatus.booked)
                         SizedBox(
                           width: 18,
                           height: 18,
@@ -552,6 +797,51 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
               ),
+              if (_hasActiveRide) ...[
+                const SizedBox(height: 16),
+                Text('Messages', style: theme.textTheme.titleMedium),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 180,
+                  child: StreamBuilder<List<RideMessage>>(
+                    stream: _rideRepository.watchMessages(_activeRideId!),
+                    builder: (context, snapshot) {
+                      final messages = snapshot.data ?? [];
+                      if (messages.isEmpty) {
+                        return const Center(child: Text('No messages yet.'));
+                      }
+                      return ListView.builder(
+                        reverse: true,
+                        itemCount: messages.length,
+                        itemBuilder: (context, index) {
+                          final message = messages[index];
+                          return ListTile(
+                            dense: true,
+                            title: Text(message.text),
+                            subtitle: Text(message.senderRole),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: const InputDecoration(
+                          hintText: 'Message driver',
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _sendMessage,
+                      icon: const Icon(Icons.send),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),

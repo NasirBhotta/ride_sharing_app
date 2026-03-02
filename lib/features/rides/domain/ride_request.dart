@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'vehicle_type.dart';
 
-enum RideStatus { requested, accepted, inProgress, completed, cancelled }
+enum RideStatus { requested, booked, arrived, inProgress, completed, cancelled }
 
 class RideRequest {
   RideRequest({
@@ -16,6 +16,16 @@ class RideRequest {
     required this.estimatedFare,
     required this.distanceKm,
     required this.createdAt,
+    required this.pickupLat,
+    required this.pickupLng,
+    required this.dropoffLat,
+    required this.dropoffLng,
+    required this.customerLat,
+    required this.customerLng,
+    required this.riderLat,
+    required this.riderLng,
+    required this.searchRadiusKm,
+    required this.maxRadiusKm,
   });
 
   final String id;
@@ -28,6 +38,16 @@ class RideRequest {
   final double estimatedFare;
   final double distanceKm;
   final DateTime? createdAt;
+  final double? pickupLat;
+  final double? pickupLng;
+  final double? dropoffLat;
+  final double? dropoffLng;
+  final double? customerLat;
+  final double? customerLng;
+  final double? riderLat;
+  final double? riderLng;
+  final double searchRadiusKm;
+  final double maxRadiusKm;
 
   Map<String, dynamic> toFirestore() {
     return {
@@ -39,6 +59,16 @@ class RideRequest {
       'vehicleType': vehicleType.id,
       'estimatedFare': estimatedFare,
       'distanceKm': distanceKm,
+      'pickupLat': pickupLat,
+      'pickupLng': pickupLng,
+      'dropoffLat': dropoffLat,
+      'dropoffLng': dropoffLng,
+      'customerLat': customerLat,
+      'customerLng': customerLng,
+      'riderLat': riderLat,
+      'riderLng': riderLng,
+      'searchRadiusKm': searchRadiusKm,
+      'maxRadiusKm': maxRadiusKm,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }
@@ -66,6 +96,16 @@ class RideRequest {
       estimatedFare: (data['estimatedFare'] as num?)?.toDouble() ?? 0,
       distanceKm: (data['distanceKm'] as num?)?.toDouble() ?? 0,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      pickupLat: (data['pickupLat'] as num?)?.toDouble(),
+      pickupLng: (data['pickupLng'] as num?)?.toDouble(),
+      dropoffLat: (data['dropoffLat'] as num?)?.toDouble(),
+      dropoffLng: (data['dropoffLng'] as num?)?.toDouble(),
+      customerLat: (data['customerLat'] as num?)?.toDouble(),
+      customerLng: (data['customerLng'] as num?)?.toDouble(),
+      riderLat: (data['riderLat'] as num?)?.toDouble(),
+      riderLng: (data['riderLng'] as num?)?.toDouble(),
+      searchRadiusKm: (data['searchRadiusKm'] as num?)?.toDouble() ?? 2.0,
+      maxRadiusKm: (data['maxRadiusKm'] as num?)?.toDouble() ?? 8.0,
     );
   }
 }
