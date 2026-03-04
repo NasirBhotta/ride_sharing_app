@@ -1,3 +1,3 @@
 class MapsConfig {
-  static const directionsApiKey = 'AIzaSyD5gVqAN9NviYc9s5dsGoiT_rBq8EECu0k';
+  static const directionsApiKey = 'AIzaSyDokWAEammXOAyow94XdZ-CC1N6u_mCJ1k';
 }

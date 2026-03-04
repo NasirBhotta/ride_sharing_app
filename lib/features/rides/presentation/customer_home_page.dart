@@ -19,18 +19,15 @@ import '../domain/vehicle_type.dart';
 import 'widgets/ride_location_fields.dart';
 import 'widgets/vehicle_option_card.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Enum to surface exactly WHY a route could not be drawn
-// ─────────────────────────────────────────────────────────────────────────────
 enum _RouteState {
-  idle, // no active ride
-  loading, // network call in flight
-  success, // polyline drawn successfully
-  noApiKey, // placeholder key detected
-  missingCoords, // ride coords are null for current status
-  apiError, // Directions API returned an error string
-  emptyResult, // API responded but points list was empty
-  exception, // unexpected exception during fetch
+  idle,
+  loading,
+  success,
+  noApiKey,
+  missingCoords,
+  apiError,
+  emptyResult,
+  exception,
 }
 
 class CustomerHomePage extends StatefulWidget {
@@ -67,7 +64,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   // ── Route debug state ──────────────────────────────────────────────
   _RouteState _routeState = _RouteState.idle;
-  String? _routeErrorDetail; // extra context from API / exception
+  String? _routeErrorDetail;
 
   // ── Ride state ────────────────────────────────────────────────────
   String? _activeRideId;
@@ -76,6 +73,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   StreamSubscription<Position>? _positionSubscription;
   Timer? _radiusTimer;
   double _searchRadiusKm = _initialRadiusKm;
+
+  // FIX: track last status so we only re-fetch the route when status changes,
+  // not on every rider GPS update.
+  RideStatus? _lastRouteStatus;
 
   bool _isRequesting = false;
   bool _isCancelling = false;
@@ -274,10 +275,29 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Route drawing — with explicit state tracking at every branch
+  // Route drawing
+  //
+  // FIX 1: Removed dead oLat/oLng variables in inProgress block that
+  //        were computed but never used (coords mismatch confusion).
+  // FIX 2: Route is only re-fetched when the ride STATUS changes, not
+  //        on every Firestore stream event (stops the inProgress refresh).
+  // FIX 3: Camera only fits bounds once when route is first drawn, not
+  //        on every rider GPS ping.
   // ─────────────────────────────────────────────────────────────────
 
-  Future<void> _updateDirectionsForRide(RideRequest ride) async {
+  Future<void> _updateDirectionsForRide(
+    RideRequest ride, {
+    bool forceRefetch = false,
+  }) async {
+    // Only re-fetch route when status changes, unless forced.
+    // This is the primary fix for the constant-refresh / Directions API spam.
+    final statusChanged = ride.status != _lastRouteStatus;
+    if (!statusChanged && !forceRefetch) {
+      // Status hasn't changed — just update the marker, no route re-fetch.
+      if (mounted) setState(() {}); // refresh marker position only
+      return;
+    }
+
     // ── Guard 1: API key not configured ───────────────────────────
     if (MapsConfig.directionsApiKey == 'YOUR_GOOGLE_DIRECTIONS_API_KEY') {
       if (mounted) {
@@ -287,6 +307,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               'MapsConfig.directionsApiKey is still the placeholder value. '
               'Replace it with a real key in maps_config.dart.';
           _polylines = {};
+          _lastRouteStatus = ride.status;
         });
       }
       debugPrint('[Route] ❌ No API key configured.');
@@ -314,7 +335,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         );
       }
     } else if (ride.status == RideStatus.inProgress) {
-      // Pickup → Dropoff
+      // FIX: Use pickupLat/Lng → dropoffLat/Lng (the static trip route).
+      // The oLat/oLng from _currentLocation was dead code before — removed.
       if (ride.pickupLat != null &&
           ride.pickupLng != null &&
           ride.dropoffLat != null &&
@@ -335,7 +357,12 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       // Any other status — clear the route
       debugPrint('[Route] Status=${ride.status} — clearing polyline.');
       _clearPolylines();
-      if (mounted) setState(() => _routeState = _RouteState.idle);
+      if (mounted) {
+        setState(() {
+          _routeState = _RouteState.idle;
+          _lastRouteStatus = ride.status;
+        });
+      }
       return;
     }
 
@@ -348,13 +375,19 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               'Status is ${ride.status.name} but one or more coordinate '
               'fields are null in the RideRequest document.';
           _polylines = {};
+          _lastRouteStatus = ride.status;
         });
       }
       return;
     }
 
     // ── Fetch route ───────────────────────────────────────────────
-    if (mounted) setState(() => _routeState = _RouteState.loading);
+    if (mounted) {
+      setState(() {
+        _routeState = _RouteState.loading;
+        _lastRouteStatus = ride.status;
+      });
+    }
 
     final points = PolylinePoints();
     late final PolylineResult result;
@@ -428,17 +461,20 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       _routeErrorDetail = null;
     });
 
-    // Fit both endpoints in view
+    // FIX: Fit bounds only once when the route is first drawn (status changed),
+    // not on every subsequent GPS ping.
     unawaited(_fitMapToBounds(origin, destination));
   }
 
   void _clearPolylines() {
     if (_polylines.isNotEmpty || _routeState != _RouteState.idle) {
-      setState(() {
-        _polylines = {};
-        _routeState = _RouteState.idle;
-        _routeErrorDetail = null;
-      });
+      if (mounted) {
+        setState(() {
+          _polylines = {};
+          _routeState = _RouteState.idle;
+          _routeErrorDetail = null;
+        });
+      }
     }
   }
 
@@ -478,38 +514,57 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   void _startWatchingRide(String rideId) {
     _rideSubscription?.cancel();
+    _lastRouteStatus = null; // reset so first event always draws route
+
     _rideSubscription = _rideRepository
         .watchRide(rideId)
         .listen(
           (ride) {
             if (!mounted) return;
+
+            final previousStatus = _activeRide?.status;
             setState(() => _activeRide = ride);
 
-            final statusMsg = switch (ride.status) {
-              RideStatus.booked => 'Driver booked your ride.',
-              RideStatus.arrived => 'Driver has arrived.',
-              RideStatus.inProgress => 'Ride in progress.',
-              RideStatus.completed => 'Ride completed.',
-              RideStatus.cancelled => 'Ride cancelled.',
-              _ => null,
-            };
-
-            if (statusMsg != null) {
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text(statusMsg)));
+            // Only show snackbar on status transitions
+            if (ride.status != previousStatus) {
+              final statusMsg = switch (ride.status) {
+                RideStatus.booked => 'Driver booked your ride.',
+                RideStatus.arrived => 'Driver has arrived.',
+                RideStatus.inProgress => 'Ride in progress.',
+                RideStatus.completed => 'Ride completed.',
+                RideStatus.cancelled => 'Ride cancelled.',
+                _ => null,
+              };
+              if (statusMsg != null) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text(statusMsg)));
+              }
             }
 
+            // FIX: _updateDirectionsForRide now guards internally against
+            // re-fetching on every GPS ping — only refetches on status change.
             unawaited(_updateDirectionsForRide(ride));
 
-            final riderLat = ride.riderLat;
-            final riderLng = ride.riderLng;
-            if (_currentLocation != null &&
-                riderLat != null &&
-                riderLng != null) {
-              unawaited(
-                _fitMapToBounds(_currentLocation!, LatLng(riderLat, riderLng)),
-              );
+            // FIX: Only fit camera to rider position when status is booked
+            // (driver approaching pickup). During inProgress, the route bounds
+            // are already set by _updateDirectionsForRide and should not jump
+            // on every GPS update.
+            if (ride.status == RideStatus.booked) {
+              final riderLat = ride.riderLat;
+              final riderLng = ride.riderLng;
+              if (_currentLocation != null &&
+                  riderLat != null &&
+                  riderLng != null &&
+                  ride.status != previousStatus) {
+                // Only fit bounds on booked transition, not every GPS tick
+                unawaited(
+                  _fitMapToBounds(
+                    _currentLocation!,
+                    LatLng(riderLat, riderLng),
+                  ),
+                );
+              }
             }
 
             if (ride.status == RideStatus.completed ||
@@ -520,6 +575,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               setState(() {
                 _activeRideId = null;
                 _activeRide = null;
+                _lastRouteStatus = null;
               });
               _clearPolylines();
             }
@@ -601,6 +657,12 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       return;
     }
 
+    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    debugPrint('[RequestCheck] pickupLoc  : $_currentLocation');
+    debugPrint('[RequestCheck] dropoffLoc : $_dropoffLatLng');
+    debugPrint('[RequestCheck] dropoffTxt : ${_dropoffController.text}');
+    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
     setState(() => _isRequesting = true);
     try {
       final request = RideRequest(
@@ -641,7 +703,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${_selectedVehicle.label} requested. Est. \$${_fareFor(_selectedVehicle).toStringAsFixed(2)}',
+            '${_selectedVehicle.label} requested. Est. PKR${_fareFor(_selectedVehicle).toStringAsFixed(2)}',
           ),
         ),
       );
@@ -742,7 +804,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Route status badge — shown in UI when a route should exist
+  // Route status badge
   // ─────────────────────────────────────────────────────────────────
 
   Widget _buildRouteBadge(ThemeData theme) {
@@ -785,7 +847,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     };
 
     return GestureDetector(
-      // Tap to see full detail in a bottom sheet
       onTap:
           _routeErrorDetail == null
               ? null
@@ -1040,7 +1101,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                             : 'Est. distance: ~${_distanceKm.toStringAsFixed(1)} km',
                       ),
                       Text(
-                        'Est. \$${_fareFor(_selectedVehicle).toStringAsFixed(2)}',
+                        'Est. PKR ${(_fareFor(_selectedVehicle) * 50).toStringAsFixed(2)}',
                         style: theme.textTheme.titleMedium,
                       ),
                     ],
