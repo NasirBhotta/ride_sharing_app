@@ -19,6 +19,20 @@ import '../domain/vehicle_type.dart';
 import 'widgets/ride_location_fields.dart';
 import 'widgets/vehicle_option_card.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum to surface exactly WHY a route could not be drawn
+// ─────────────────────────────────────────────────────────────────────────────
+enum _RouteState {
+  idle, // no active ride
+  loading, // network call in flight
+  success, // polyline drawn successfully
+  noApiKey, // placeholder key detected
+  missingCoords, // ride coords are null for current status
+  apiError, // Directions API returned an error string
+  emptyResult, // API responded but points list was empty
+  exception, // unexpected exception during fetch
+}
+
 class CustomerHomePage extends StatefulWidget {
   const CustomerHomePage({super.key});
 
@@ -27,11 +41,14 @@ class CustomerHomePage extends StatefulWidget {
 }
 
 class _CustomerHomePageState extends State<CustomerHomePage> {
+  // ── Constants ─────────────────────────────────────────────────────
   static const _initialRadiusKm = 2.0;
   static const _radiusStepKm = 1.0;
   static const _maxRadiusKm = 8.0;
   static const _radiusStepInterval = Duration(seconds: 30);
+  static const _fallbackLocation = LatLng(37.42796133580664, -122.085749655962);
 
+  // ── Repos / Controllers ───────────────────────────────────────────
   final _rideRepository = RideRepository();
   final _authRepository = AuthRepository();
   final _pickupController = TextEditingController(
@@ -40,13 +57,19 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   final _dropoffController = TextEditingController();
   final _messageController = TextEditingController();
 
+  // ── Map state ─────────────────────────────────────────────────────
   GoogleMapController? _mapController;
   VehicleType _selectedVehicle = VehicleType.car;
-
   LatLng? _currentLocation;
   LatLng? _dropoffLatLng;
   bool _loadingLocation = true;
+  Set<Polyline> _polylines = {};
 
+  // ── Route debug state ──────────────────────────────────────────────
+  _RouteState _routeState = _RouteState.idle;
+  String? _routeErrorDetail; // extra context from API / exception
+
+  // ── Ride state ────────────────────────────────────────────────────
   String? _activeRideId;
   RideRequest? _activeRide;
   StreamSubscription<RideRequest>? _rideSubscription;
@@ -56,11 +79,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   bool _isRequesting = false;
   bool _isCancelling = false;
-  bool _loadingRoute = false;
 
-  Set<Polyline> _polylines = {};
-
-  static const _fallbackLocation = LatLng(37.42796133580664, -122.085749655962);
+  // ─────────────────────────────────────────────────────────────────
+  // Lifecycle
+  // ─────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -79,6 +101,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     _radiusTimer?.cancel();
     super.dispose();
   }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Location helpers
+  // ─────────────────────────────────────────────────────────────────
 
   Future<void> _initLocation() async {
     try {
@@ -107,7 +133,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         _loadingLocation = false;
         _pickupController.text = pickupAddress;
       });
-
       await _moveCamera(latLng);
     } catch (_) {
       final last = await Geolocator.getLastKnownPosition();
@@ -123,7 +148,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         _loadingLocation = false;
         _pickupController.text = fallbackAddress;
       });
-
       await _moveCamera(latLng);
 
       if (!mounted) return;
@@ -179,8 +203,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       final parts =
           [place.name, place.locality, place.administrativeArea]
               .whereType<String>()
-              .map((value) => value.trim())
-              .where((value) => value.isNotEmpty)
+              .map((v) => v.trim())
+              .where((v) => v.isNotEmpty)
               .toList();
       if (parts.isEmpty) {
         return '${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)}';
@@ -194,7 +218,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   Future<bool> _resolveDropoffFromText() async {
     final query = _dropoffController.text.trim();
     if (query.isEmpty) return false;
-
     try {
       final locations = await locationFromAddress(query);
       if (locations.isEmpty) return false;
@@ -209,7 +232,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         _dropoffLatLng = target;
         _dropoffController.text = resolvedAddress;
       });
-
       await _moveCamera(target);
       return true;
     } catch (_) {
@@ -251,43 +273,92 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Route drawing — with explicit state tracking at every branch
+  // ─────────────────────────────────────────────────────────────────
+
   Future<void> _updateDirectionsForRide(RideRequest ride) async {
+    // ── Guard 1: API key not configured ───────────────────────────
     if (MapsConfig.directionsApiKey == 'YOUR_GOOGLE_DIRECTIONS_API_KEY') {
+      if (mounted) {
+        setState(() {
+          _routeState = _RouteState.noApiKey;
+          _routeErrorDetail =
+              'MapsConfig.directionsApiKey is still the placeholder value. '
+              'Replace it with a real key in maps_config.dart.';
+          _polylines = {};
+        });
+      }
+      debugPrint('[Route] ❌ No API key configured.');
       return;
     }
 
+    // ── Guard 2: resolve origin / destination for current status ──
     LatLng? origin;
     LatLng? destination;
 
     if (ride.status == RideStatus.booked) {
+      // Driver → Pickup
       if (ride.riderLat != null &&
           ride.riderLng != null &&
           ride.pickupLat != null &&
           ride.pickupLng != null) {
         origin = LatLng(ride.riderLat!, ride.riderLng!);
         destination = LatLng(ride.pickupLat!, ride.pickupLng!);
+        debugPrint('[Route] Status=booked  origin=$origin  dest=$destination');
+      } else {
+        debugPrint(
+          '[Route] ❌ Status=booked but coords missing — '
+          'riderLat=${ride.riderLat} riderLng=${ride.riderLng} '
+          'pickupLat=${ride.pickupLat} pickupLng=${ride.pickupLng}',
+        );
       }
     } else if (ride.status == RideStatus.inProgress) {
+      // Pickup → Dropoff
       if (ride.pickupLat != null &&
           ride.pickupLng != null &&
           ride.dropoffLat != null &&
           ride.dropoffLng != null) {
         origin = LatLng(ride.pickupLat!, ride.pickupLng!);
         destination = LatLng(ride.dropoffLat!, ride.dropoffLng!);
+        debugPrint(
+          '[Route] Status=inProgress  origin=$origin  dest=$destination',
+        );
+      } else {
+        debugPrint(
+          '[Route] ❌ Status=inProgress but coords missing — '
+          'pickupLat=${ride.pickupLat} pickupLng=${ride.pickupLng} '
+          'dropoffLat=${ride.dropoffLat} dropoffLng=${ride.dropoffLng}',
+        );
       }
     } else {
+      // Any other status — clear the route
+      debugPrint('[Route] Status=${ride.status} — clearing polyline.');
       _clearPolylines();
+      if (mounted) setState(() => _routeState = _RouteState.idle);
       return;
     }
 
+    // ── Guard 3: coords resolved? ─────────────────────────────────
     if (origin == null || destination == null) {
-      _clearPolylines();
+      if (mounted) {
+        setState(() {
+          _routeState = _RouteState.missingCoords;
+          _routeErrorDetail =
+              'Status is ${ride.status.name} but one or more coordinate '
+              'fields are null in the RideRequest document.';
+          _polylines = {};
+        });
+      }
       return;
     }
 
-    setState(() => _loadingRoute = true);
+    // ── Fetch route ───────────────────────────────────────────────
+    if (mounted) setState(() => _routeState = _RouteState.loading);
+
     final points = PolylinePoints();
     late final PolylineResult result;
+
     try {
       result = await points.getRouteBetweenCoordinates(
         request: PolylineRequest(
@@ -297,20 +368,50 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         ),
         googleApiKey: MapsConfig.directionsApiKey,
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[Route] ❌ Exception during fetch: $e\n$st');
       if (!mounted) return;
-      setState(() => _loadingRoute = false);
+      setState(() {
+        _routeState = _RouteState.exception;
+        _routeErrorDetail = e.toString();
+        _polylines = {};
+      });
       return;
     }
 
     if (!mounted) return;
-    if (result.points.isEmpty) {
+
+    // ── Guard 4: Directions API returned an error ─────────────────
+    if (result.errorMessage != null && result.errorMessage!.isNotEmpty) {
+      debugPrint('[Route] ❌ Directions API error: ${result.errorMessage}');
       setState(() {
+        _routeState = _RouteState.apiError;
+        _routeErrorDetail = result.errorMessage;
         _polylines = {};
-        _loadingRoute = false;
       });
       return;
     }
+
+    // ── Guard 5: empty points list ────────────────────────────────
+    if (result.points.isEmpty) {
+      debugPrint(
+        '[Route] ❌ Directions API returned 0 points. '
+        'Check that the key has the Directions API enabled and '
+        'the origin/destination coordinates are reachable by road.',
+      );
+      setState(() {
+        _routeState = _RouteState.emptyResult;
+        _routeErrorDetail =
+            'The Directions API responded without any route points. '
+            'Make sure the Directions API is enabled for your key and '
+            'that origin ($origin) → destination ($destination) is driveable.';
+        _polylines = {};
+      });
+      return;
+    }
+
+    // ── Success ───────────────────────────────────────────────────
+    debugPrint('[Route] ✅ ${result.points.length} points received.');
 
     final polyline = Polyline(
       polylineId: const PolylineId('route'),
@@ -323,17 +424,29 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
     setState(() {
       _polylines = {polyline};
-      _loadingRoute = false;
+      _routeState = _RouteState.success;
+      _routeErrorDetail = null;
     });
+
+    // Fit both endpoints in view
+    unawaited(_fitMapToBounds(origin, destination));
   }
 
   void _clearPolylines() {
-    if (_polylines.isNotEmpty) {
-      setState(() => _polylines = {});
+    if (_polylines.isNotEmpty || _routeState != _RouteState.idle) {
+      setState(() {
+        _polylines = {};
+        _routeState = _RouteState.idle;
+        _routeErrorDetail = null;
+      });
     }
   }
 
-  double _toRad(double degree) => degree * pi / 180;
+  // ─────────────────────────────────────────────────────────────────
+  // Fare / distance helpers
+  // ─────────────────────────────────────────────────────────────────
+
+  double _toRad(double d) => d * pi / 180;
 
   double _haversineKm(LatLng a, LatLng b) {
     const r = 6371.0;
@@ -341,7 +454,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     final dLon = _toRad(b.longitude - a.longitude);
     final lat1 = _toRad(a.latitude);
     final lat2 = _toRad(b.latitude);
-
     final h =
         pow(sin(dLat / 2), 2) + cos(lat1) * cos(lat2) * pow(sin(dLon / 2), 2);
     return 2 * r * asin(sqrt(h));
@@ -359,6 +471,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     const perKm = 1.15;
     return (baseFare + (_distanceKm * perKm)) * type.multiplier;
   }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Ride lifecycle helpers
+  // ─────────────────────────────────────────────────────────────────
 
   void _startWatchingRide(String rideId) {
     _rideSubscription?.cancel();
@@ -405,6 +521,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 _activeRideId = null;
                 _activeRide = null;
               });
+              _clearPolylines();
             }
           },
           onError: (error) {
@@ -595,6 +712,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Computed getters
+  // ─────────────────────────────────────────────────────────────────
+
   bool get _hasActiveRide => _activeRideId != null;
 
   String get _statusLabel {
@@ -619,6 +740,121 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       _ => theme.colorScheme.secondary,
     };
   }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Route status badge — shown in UI when a route should exist
+  // ─────────────────────────────────────────────────────────────────
+
+  Widget _buildRouteBadge(ThemeData theme) {
+    if (_routeState == _RouteState.idle || _routeState == _RouteState.success) {
+      return const SizedBox.shrink();
+    }
+
+    final (icon, color, label) = switch (_routeState) {
+      _RouteState.loading => (
+        Icons.route_outlined,
+        theme.colorScheme.primary,
+        'Loading route…',
+      ),
+      _RouteState.noApiKey => (
+        Icons.vpn_key_off_outlined,
+        theme.colorScheme.error,
+        'Directions API key not set',
+      ),
+      _RouteState.missingCoords => (
+        Icons.location_off_outlined,
+        Colors.orange,
+        'Route coords not available yet',
+      ),
+      _RouteState.apiError => (
+        Icons.cloud_off_outlined,
+        theme.colorScheme.error,
+        'Directions API error',
+      ),
+      _RouteState.emptyResult => (
+        Icons.directions_off_outlined,
+        Colors.orange,
+        'No driveable route found',
+      ),
+      _RouteState.exception => (
+        Icons.error_outline,
+        theme.colorScheme.error,
+        'Route fetch failed',
+      ),
+      _ => (Icons.info_outline, theme.colorScheme.secondary, ''),
+    };
+
+    return GestureDetector(
+      // Tap to see full detail in a bottom sheet
+      onTap:
+          _routeErrorDetail == null
+              ? null
+              : () => showModalBottomSheet<void>(
+                context: context,
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                ),
+                builder:
+                    (_) => Padding(
+                      padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Icon(icon, color: color, size: 22),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Route diagnostic',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 14),
+                          Text(
+                            _routeErrorDetail!,
+                            style: theme.textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+              ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.10),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.35), width: 1.2),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: color),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (_routeErrorDetail != null) ...[
+              const SizedBox(width: 4),
+              Icon(Icons.info_outline, size: 13, color: color.withOpacity(0.7)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Build
+  // ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -647,6 +883,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Map ───────────────────────────────────────────────
               ClipRRect(
                 borderRadius: BorderRadius.circular(18),
                 child: SizedBox(
@@ -663,9 +900,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                     },
                     onMapCreated: (controller) {
                       _mapController = controller;
-                      if (_currentLocation != null) {
+                      if (_currentLocation != null)
                         _moveCamera(_currentLocation!);
-                      }
                     },
                     onTap: _onMapTapped,
                     myLocationEnabled: _currentLocation != null,
@@ -700,22 +936,30 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
+
+              // ── Loading bars ──────────────────────────────────────
               if (_loadingLocation)
                 const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
+                  padding: EdgeInsets.only(bottom: 8),
                   child: LinearProgressIndicator(minHeight: 2),
                 ),
-              if (_loadingRoute)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 12),
-                  child: LinearProgressIndicator(minHeight: 2),
-                ),
+
+              // ── Route badge (only during active ride) ─────────────
               if (_hasActiveRide) ...[
+                _buildRouteBadge(theme),
+                if (_routeState != _RouteState.idle &&
+                    _routeState != _RouteState.success)
+                  const SizedBox(height: 8),
+              ],
+
+              // ── Ride status banner ────────────────────────────────
+              if (_hasActiveRide) ...[
+                const SizedBox(height: 4),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
                   decoration: BoxDecoration(
-                    color: _statusColor(theme).withValues(alpha: 0.12),
+                    color: _statusColor(theme).withOpacity(0.12),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: _statusColor(theme), width: 1.4),
                   ),
@@ -750,6 +994,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 ),
                 const SizedBox(height: 12),
               ],
+
+              // ── Location fields ───────────────────────────────────
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -763,6 +1009,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 ),
               ),
               const SizedBox(height: 16),
+
+              // ── Vehicle picker ────────────────────────────────────
               if (!_hasActiveRide) ...[
                 Text('Choose vehicle', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 8),
@@ -778,6 +1026,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
               ],
+
+              // ── Fare summary ──────────────────────────────────────
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -797,6 +1047,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
               ),
+
+              // ── Messaging ─────────────────────────────────────────
               if (_hasActiveRide) ...[
                 const SizedBox(height: 16),
                 Text('Messages', style: theme.textTheme.titleMedium),
@@ -846,6 +1098,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           ),
         ),
       ),
+
+      // ── Bottom action button ─────────────────────────────────────
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child:
