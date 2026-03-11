@@ -5,10 +5,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:ride_sharing_app/features/rides/presentation/direction_parser.dart';
 
 import '../../../app/config/maps_config.dart';
 import '../../auth/data/auth_repository.dart';
@@ -16,6 +17,7 @@ import '../data/ride_repository.dart';
 import '../domain/ride_message.dart';
 import '../domain/ride_request.dart';
 import '../domain/vehicle_type.dart';
+import 'navigation_hud.dart';
 import 'widgets/ride_location_fields.dart';
 import 'widgets/vehicle_option_card.dart';
 
@@ -32,58 +34,49 @@ enum _RouteState {
 
 class CustomerHomePage extends StatefulWidget {
   const CustomerHomePage({super.key});
-
   @override
   State<CustomerHomePage> createState() => _CustomerHomePageState();
 }
 
 class _CustomerHomePageState extends State<CustomerHomePage> {
-  // ── Constants ─────────────────────────────────────────────────────
   static const _initialRadiusKm = 2.0;
   static const _radiusStepKm = 1.0;
   static const _maxRadiusKm = 8.0;
   static const _radiusStepInterval = Duration(seconds: 30);
-  static const _fallbackLocation = LatLng(37.42796133580664, -122.085749655962);
+  static const _fallback = LatLng(37.42796133580664, -122.085749655962);
 
-  // ── Repos / Controllers ───────────────────────────────────────────
-  final _rideRepository = RideRepository();
-  final _authRepository = AuthRepository();
-  final _pickupController = TextEditingController(
-    text: 'Detecting location...',
-  );
-  final _dropoffController = TextEditingController();
-  final _messageController = TextEditingController();
+  final _rideRepo = RideRepository();
+  final _authRepo = AuthRepository();
+  final _pickupCtrl = TextEditingController(text: 'Detecting location...');
+  final _dropoffCtrl = TextEditingController();
+  final _messageCtrl = TextEditingController();
 
-  // ── Map state ─────────────────────────────────────────────────────
-  GoogleMapController? _mapController;
-  VehicleType _selectedVehicle = VehicleType.car;
-  LatLng? _currentLocation;
+  GoogleMapController? _mapCtrl;
+  VehicleType _vehicle = VehicleType.car;
+  LatLng? _currentLoc;
   LatLng? _dropoffLatLng;
-  bool _loadingLocation = true;
+  bool _loadingLoc = true;
   Set<Polyline> _polylines = {};
+  List<LatLng> _routePoints = [];
 
-  // ── Route debug state ──────────────────────────────────────────────
+  // navigation
+  RouteInfo? _routeInfo;
+
   _RouteState _routeState = _RouteState.idle;
-  String? _routeErrorDetail;
+  String? _routeError;
+  RideStatus? _lastRouteStatus;
 
-  // ── Ride state ────────────────────────────────────────────────────
   String? _activeRideId;
   RideRequest? _activeRide;
-  StreamSubscription<RideRequest>? _rideSubscription;
-  StreamSubscription<Position>? _positionSubscription;
+  StreamSubscription<RideRequest>? _rideSub;
+  StreamSubscription<Position>? _posSub;
   Timer? _radiusTimer;
   double _searchRadiusKm = _initialRadiusKm;
-
-  // FIX: track last status so we only re-fetch the route when status changes,
-  // not on every rider GPS update.
-  RideStatus? _lastRouteStatus;
 
   bool _isRequesting = false;
   bool _isCancelling = false;
 
-  // ─────────────────────────────────────────────────────────────────
-  // Lifecycle
-  // ─────────────────────────────────────────────────────────────────
+  // ── Lifecycle ─────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -93,64 +86,54 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   @override
   void dispose() {
-    _pickupController.dispose();
-    _dropoffController.dispose();
-    _messageController.dispose();
-    _mapController?.dispose();
-    _rideSubscription?.cancel();
-    _positionSubscription?.cancel();
+    _pickupCtrl.dispose();
+    _dropoffCtrl.dispose();
+    _messageCtrl.dispose();
+    _mapCtrl?.dispose();
+    _rideSub?.cancel();
+    _posSub?.cancel();
     _radiusTimer?.cancel();
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Location helpers
-  // ─────────────────────────────────────────────────────────────────
+  // ── Location ──────────────────────────────────────────────────────
 
   Future<void> _initLocation() async {
     try {
-      final hasPermission = await _ensureLocationPermission();
-      if (!hasPermission) {
+      if (!await _ensurePermission()) {
         if (!mounted) return;
         setState(() {
-          _loadingLocation = false;
-          _pickupController.text = 'Location permission required';
+          _loadingLoc = false;
+          _pickupCtrl.text = 'Location permission required';
         });
         return;
       }
-
-      final position = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
       ).timeout(const Duration(seconds: 12));
-
-      final latLng = LatLng(position.latitude, position.longitude);
-      final pickupAddress = await _addressFromLatLng(latLng);
-
+      final ll = LatLng(pos.latitude, pos.longitude);
+      final addr = await _addrFromLL(ll);
       if (!mounted) return;
       setState(() {
-        _currentLocation = latLng;
-        _loadingLocation = false;
-        _pickupController.text = pickupAddress;
+        _currentLoc = ll;
+        _loadingLoc = false;
+        _pickupCtrl.text = addr;
       });
-      await _moveCamera(latLng);
+      await _moveCamera(ll);
     } catch (_) {
       final last = await Geolocator.getLastKnownPosition();
-      final latLng =
-          last == null
-              ? _fallbackLocation
-              : LatLng(last.latitude, last.longitude);
-      final fallbackAddress = await _addressFromLatLng(latLng);
-
+      final ll =
+          last == null ? _fallback : LatLng(last.latitude, last.longitude);
+      final addr = await _addrFromLL(ll);
       if (!mounted) return;
       setState(() {
-        _currentLocation = latLng;
-        _loadingLocation = false;
-        _pickupController.text = fallbackAddress;
+        _currentLoc = ll;
+        _loadingLoc = false;
+        _pickupCtrl.text = addr;
       });
-      await _moveCamera(latLng);
-
+      await _moveCamera(ll);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -162,78 +145,49 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     }
   }
 
-  Future<bool> _ensureLocationPermission() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enable location service on the emulator.'),
-        ),
-      );
-      return false;
-    }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permission denied.')),
-      );
-      return false;
-    }
-
-    return true;
+  Future<bool> _ensurePermission() async {
+    if (!await Geolocator.isLocationServiceEnabled()) return false;
+    var p = await Geolocator.checkPermission();
+    if (p == LocationPermission.denied)
+      p = await Geolocator.requestPermission();
+    return p != LocationPermission.denied &&
+        p != LocationPermission.deniedForever;
   }
 
-  Future<String> _addressFromLatLng(LatLng point) async {
+  Future<String> _addrFromLL(LatLng p) async {
     try {
-      final placemarks = await placemarkFromCoordinates(
-        point.latitude,
-        point.longitude,
-      );
-      if (placemarks.isEmpty) {
-        return '${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)}';
-      }
-      final place = placemarks.first;
+      final marks = await placemarkFromCoordinates(p.latitude, p.longitude);
+      if (marks.isEmpty) return _coord(p);
+      final m = marks.first;
       final parts =
-          [place.name, place.locality, place.administrativeArea]
+          [m.name, m.locality, m.administrativeArea]
               .whereType<String>()
               .map((v) => v.trim())
               .where((v) => v.isNotEmpty)
               .toList();
-      if (parts.isEmpty) {
-        return '${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)}';
-      }
-      return parts.join(', ');
+      return parts.isEmpty ? _coord(p) : parts.join(', ');
     } catch (_) {
-      return '${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)}';
+      return _coord(p);
     }
   }
 
-  Future<bool> _resolveDropoffFromText() async {
-    final query = _dropoffController.text.trim();
-    if (query.isEmpty) return false;
-    try {
-      final locations = await locationFromAddress(query);
-      if (locations.isEmpty) return false;
-      final target = LatLng(
-        locations.first.latitude,
-        locations.first.longitude,
-      );
-      final resolvedAddress = await _addressFromLatLng(target);
+  String _coord(LatLng p) =>
+      '${p.latitude.toStringAsFixed(5)}, ${p.longitude.toStringAsFixed(5)}';
 
+  Future<bool> _resolveDropoff() async {
+    final q = _dropoffCtrl.text.trim();
+    if (q.isEmpty) return false;
+    try {
+      final locs = await locationFromAddress(q);
+      if (locs.isEmpty) return false;
+      final ll = LatLng(locs.first.latitude, locs.first.longitude);
+      final addr = await _addrFromLL(ll);
       if (!mounted) return false;
       setState(() {
-        _dropoffLatLng = target;
-        _dropoffController.text = resolvedAddress;
+        _dropoffLatLng = ll;
+        _dropoffCtrl.text = addr;
       });
-      await _moveCamera(target);
+      await _moveCamera(ll);
       return true;
     } catch (_) {
       if (!mounted) return false;
@@ -244,21 +198,20 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     }
   }
 
-  Future<void> _onMapTapped(LatLng point) async {
-    if (_hasActiveRide) return;
-    final address = await _addressFromLatLng(point);
+  Future<void> _onMapTapped(LatLng p) async {
+    if (_hasRide) return;
+    final addr = await _addrFromLL(p);
     if (!mounted) return;
     setState(() {
-      _dropoffLatLng = point;
-      _dropoffController.text = address;
+      _dropoffLatLng = p;
+      _dropoffCtrl.text = addr;
     });
   }
 
-  Future<void> _moveCamera(LatLng target) async {
-    await _mapController?.animateCamera(CameraUpdate.newLatLngZoom(target, 15));
-  }
+  Future<void> _moveCamera(LatLng t) async =>
+      _mapCtrl?.animateCamera(CameraUpdate.newLatLngZoom(t, 15));
 
-  Future<void> _fitMapToBounds(LatLng a, LatLng b) async {
+  Future<void> _fitBounds(LatLng a, LatLng b) async {
     final bounds = LatLngBounds(
       southwest: LatLng(
         min(a.latitude, b.latitude),
@@ -269,265 +222,232 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         max(a.longitude, b.longitude),
       ),
     );
-    await _mapController?.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds, 64),
-    );
+    await _mapCtrl?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 72));
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Route drawing
-  //
-  // FIX 1: Removed dead oLat/oLng variables in inProgress block that
-  //        were computed but never used (coords mismatch confusion).
-  // FIX 2: Route is only re-fetched when the ride STATUS changes, not
-  //        on every Firestore stream event (stops the inProgress refresh).
-  // FIX 3: Camera only fits bounds once when route is first drawn, not
-  //        on every rider GPS ping.
-  // ─────────────────────────────────────────────────────────────────
+  // ── Route ─────────────────────────────────────────────────────────
 
-  Future<void> _updateDirectionsForRide(
-    RideRequest ride, {
-    bool forceRefetch = false,
-  }) async {
-    // Only re-fetch route when status changes, unless forced.
-    // This is the primary fix for the constant-refresh / Directions API spam.
-    final statusChanged = ride.status != _lastRouteStatus;
-    if (!statusChanged && !forceRefetch) {
-      // Status hasn't changed — just update the marker, no route re-fetch.
-      if (mounted) setState(() {}); // refresh marker position only
+  Future<void> _updateRoute(RideRequest ride, {bool force = false}) async {
+    if (ride.status != _lastRouteStatus || force) {
+      // status changed → full re-fetch
+    } else {
+      if (mounted) setState(() {});
       return;
     }
 
-    // ── Guard 1: API key not configured ───────────────────────────
     if (MapsConfig.directionsApiKey == 'YOUR_GOOGLE_DIRECTIONS_API_KEY') {
-      if (mounted) {
+      if (mounted)
         setState(() {
           _routeState = _RouteState.noApiKey;
-          _routeErrorDetail =
-              'MapsConfig.directionsApiKey is still the placeholder value. '
-              'Replace it with a real key in maps_config.dart.';
+          _routeError = 'Replace directionsApiKey in maps_config.dart.';
           _polylines = {};
           _lastRouteStatus = ride.status;
         });
-      }
-      debugPrint('[Route] ❌ No API key configured.');
       return;
     }
 
-    // ── Guard 2: resolve origin / destination for current status ──
-    LatLng? origin;
-    LatLng? destination;
+    LatLng? origin, dest;
 
     if (ride.status == RideStatus.booked) {
-      // Driver → Pickup
       if (ride.riderLat != null &&
           ride.riderLng != null &&
           ride.pickupLat != null &&
           ride.pickupLng != null) {
         origin = LatLng(ride.riderLat!, ride.riderLng!);
-        destination = LatLng(ride.pickupLat!, ride.pickupLng!);
-        debugPrint('[Route] Status=booked  origin=$origin  dest=$destination');
-      } else {
-        debugPrint(
-          '[Route] ❌ Status=booked but coords missing — '
-          'riderLat=${ride.riderLat} riderLng=${ride.riderLng} '
-          'pickupLat=${ride.pickupLat} pickupLng=${ride.pickupLng}',
-        );
+        dest = LatLng(ride.pickupLat!, ride.pickupLng!);
       }
     } else if (ride.status == RideStatus.inProgress) {
-      // FIX: Use pickupLat/Lng → dropoffLat/Lng (the static trip route).
-      // The oLat/oLng from _currentLocation was dead code before — removed.
-      if (ride.pickupLat != null &&
-          ride.pickupLng != null &&
+      final oLat = ride.customerLat ?? ride.pickupLat;
+      final oLng = ride.customerLng ?? ride.pickupLng;
+      if (oLat != null &&
+          oLng != null &&
           ride.dropoffLat != null &&
           ride.dropoffLng != null) {
-        origin = LatLng(ride.pickupLat!, ride.pickupLng!);
-        destination = LatLng(ride.dropoffLat!, ride.dropoffLng!);
-        debugPrint(
-          '[Route] Status=inProgress  origin=$origin  dest=$destination',
-        );
-      } else {
-        debugPrint(
-          '[Route] ❌ Status=inProgress but coords missing — '
-          'pickupLat=${ride.pickupLat} pickupLng=${ride.pickupLng} '
-          'dropoffLat=${ride.dropoffLat} dropoffLng=${ride.dropoffLng}',
-        );
+        origin = LatLng(oLat, oLng);
+        dest = LatLng(ride.dropoffLat!, ride.dropoffLng!);
       }
     } else {
-      // Any other status — clear the route
-      debugPrint('[Route] Status=${ride.status} — clearing polyline.');
       _clearPolylines();
-      if (mounted) {
+      if (mounted)
         setState(() {
-          _routeState = _RouteState.idle;
           _lastRouteStatus = ride.status;
+          _routeInfo = null;
         });
-      }
       return;
     }
 
-    // ── Guard 3: coords resolved? ─────────────────────────────────
-    if (origin == null || destination == null) {
-      if (mounted) {
+    if (origin == null || dest == null) {
+      if (mounted)
         setState(() {
           _routeState = _RouteState.missingCoords;
-          _routeErrorDetail =
-              'Status is ${ride.status.name} but one or more coordinate '
-              'fields are null in the RideRequest document.';
+          _routeError = 'Status ${ride.status.name}: coords not yet available.';
           _polylines = {};
           _lastRouteStatus = ride.status;
         });
-      }
       return;
     }
 
-    // ── Fetch route ───────────────────────────────────────────────
-    if (mounted) {
-      setState(() {
-        _routeState = _RouteState.loading;
-        _lastRouteStatus = ride.status;
-      });
-    }
-
-    final points = PolylinePoints();
-    late final PolylineResult result;
+    if (mounted) setState(() => _routeState = _RouteState.loading);
 
     try {
-      result = await points.getRouteBetweenCoordinates(
-        request: PolylineRequest(
-          origin: PointLatLng(origin.latitude, origin.longitude),
-          destination: PointLatLng(destination.latitude, destination.longitude),
-          mode: TravelMode.driving,
-        ),
-        googleApiKey: MapsConfig.directionsApiKey,
-      );
-    } catch (e, st) {
-      debugPrint('[Route] ❌ Exception during fetch: $e\n$st');
+      final uri =
+          Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+            'origin': '${origin.latitude},${origin.longitude}',
+            'destination': '${dest.latitude},${dest.longitude}',
+            'mode': 'driving',
+            'key': MapsConfig.directionsApiKey,
+          });
+      final res = await http.get(uri).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (res.statusCode != 200) {
+        setState(() {
+          _routeState = _RouteState.apiError;
+          _routeError = 'HTTP ${res.statusCode}';
+          _polylines = {};
+          _lastRouteStatus = ride.status;
+        });
+        return;
+      }
+
+      final info = RouteInfo.fromJson(res.body);
+      if (info == null || info.steps.isEmpty) {
+        setState(() {
+          _routeState = _RouteState.emptyResult;
+          _polylines = {};
+          _lastRouteStatus = ride.status;
+        });
+        return;
+      }
+
+      final pts = info.steps
+          .expand((s) => s.polylinePoints)
+          .toList(growable: false);
+      setState(() {
+        _routeInfo = info;
+        _routePoints = pts;
+        _routeState = _RouteState.success;
+        _routeError = null;
+        _lastRouteStatus = ride.status;
+      });
+      _applyProgress(ride);
+      unawaited(_fitBounds(origin, dest));
+    } catch (e) {
       if (!mounted) return;
       setState(() {
         _routeState = _RouteState.exception;
-        _routeErrorDetail = e.toString();
+        _routeError = e.toString();
         _polylines = {};
+        _lastRouteStatus = ride.status;
       });
-      return;
     }
-
-    if (!mounted) return;
-
-    // ── Guard 4: Directions API returned an error ─────────────────
-    if (result.errorMessage != null && result.errorMessage!.isNotEmpty) {
-      debugPrint('[Route] ❌ Directions API error: ${result.errorMessage}');
-      setState(() {
-        _routeState = _RouteState.apiError;
-        _routeErrorDetail = result.errorMessage;
-        _polylines = {};
-      });
-      return;
-    }
-
-    // ── Guard 5: empty points list ────────────────────────────────
-    if (result.points.isEmpty) {
-      debugPrint(
-        '[Route] ❌ Directions API returned 0 points. '
-        'Check that the key has the Directions API enabled and '
-        'the origin/destination coordinates are reachable by road.',
-      );
-      setState(() {
-        _routeState = _RouteState.emptyResult;
-        _routeErrorDetail =
-            'The Directions API responded without any route points. '
-            'Make sure the Directions API is enabled for your key and '
-            'that origin ($origin) → destination ($destination) is driveable.';
-        _polylines = {};
-      });
-      return;
-    }
-
-    // ── Success ───────────────────────────────────────────────────
-    debugPrint('[Route] ✅ ${result.points.length} points received.');
-
-    final polyline = Polyline(
-      polylineId: const PolylineId('route'),
-      color: Theme.of(context).colorScheme.primary,
-      width: 6,
-      points: result.points
-          .map((p) => LatLng(p.latitude, p.longitude))
-          .toList(growable: false),
-    );
-
-    setState(() {
-      _polylines = {polyline};
-      _routeState = _RouteState.success;
-      _routeErrorDetail = null;
-    });
-
-    // FIX: Fit bounds only once when the route is first drawn (status changed),
-    // not on every subsequent GPS ping.
-    unawaited(_fitMapToBounds(origin, destination));
   }
 
   void _clearPolylines() {
-    if (_polylines.isNotEmpty || _routeState != _RouteState.idle) {
-      if (mounted) {
+    if (_polylines.isNotEmpty ||
+        _routeState != _RouteState.idle ||
+        _routePoints.isNotEmpty) {
+      if (mounted)
         setState(() {
           _polylines = {};
           _routeState = _RouteState.idle;
-          _routeErrorDetail = null;
+          _routeError = null;
+          _routePoints = [];
+          _routeInfo = null;
         });
-      }
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Fare / distance helpers
-  // ─────────────────────────────────────────────────────────────────
+  void _applyProgress(RideRequest ride) {
+    if (_routePoints.isEmpty) return;
+    LatLng? cur, dest;
 
-  double _toRad(double d) => d * pi / 180;
+    if (ride.status == RideStatus.booked) {
+      if (ride.riderLat != null && ride.riderLng != null)
+        cur = LatLng(ride.riderLat!, ride.riderLng!);
+      if (ride.pickupLat != null && ride.pickupLng != null)
+        dest = LatLng(ride.pickupLat!, ride.pickupLng!);
+    } else if (ride.status == RideStatus.inProgress) {
+      final oLat = ride.customerLat ?? _currentLoc?.latitude;
+      final oLng = ride.customerLng ?? _currentLoc?.longitude;
+      if (oLat != null && oLng != null) cur = LatLng(oLat, oLng);
+      if (ride.dropoffLat != null && ride.dropoffLng != null)
+        dest = LatLng(ride.dropoffLat!, ride.dropoffLng!);
+    } else {
+      return;
+    }
+
+    if (cur == null || dest == null) return;
+    if (_haversineKm(cur, dest) * 1000 <= 25) {
+      _clearPolylines();
+      return;
+    }
+
+    var ci = 0;
+    var cd = double.infinity;
+    for (var i = 0; i < _routePoints.length; i++) {
+      final d = _haversineKm(cur, _routePoints[i]);
+      if (d < cd) {
+        cd = d;
+        ci = i;
+      }
+    }
+    if (!mounted) return;
+    final theme = Theme.of(context);
+    setState(() {
+      _polylines = {
+        Polyline(
+          polylineId: const PolylineId('traveled'),
+          color: Colors.grey.shade400,
+          width: 6,
+          points: _routePoints.sublist(0, ci + 1),
+        ),
+        Polyline(
+          polylineId: const PolylineId('remaining'),
+          color: theme.colorScheme.primary,
+          width: 6,
+          points: _routePoints.sublist(ci),
+        ),
+      };
+    });
+  }
+
+  // ── Distance / fare ───────────────────────────────────────────────
+
+  double _rad(double d) => d * pi / 180;
 
   double _haversineKm(LatLng a, LatLng b) {
     const r = 6371.0;
-    final dLat = _toRad(b.latitude - a.latitude);
-    final dLon = _toRad(b.longitude - a.longitude);
-    final lat1 = _toRad(a.latitude);
-    final lat2 = _toRad(b.latitude);
+    final dLat = _rad(b.latitude - a.latitude);
+    final dLon = _rad(b.longitude - a.longitude);
     final h =
-        pow(sin(dLat / 2), 2) + cos(lat1) * cos(lat2) * pow(sin(dLon / 2), 2);
+        pow(sin(dLat / 2), 2) +
+        cos(_rad(a.latitude)) * cos(_rad(b.latitude)) * pow(sin(dLon / 2), 2);
     return 2 * r * asin(sqrt(h));
   }
 
-  double get _distanceKm {
-    if (_currentLocation != null && _dropoffLatLng != null) {
-      return _haversineKm(_currentLocation!, _dropoffLatLng!);
-    }
-    return 5.0;
-  }
+  double get _distKm =>
+      (_currentLoc != null && _dropoffLatLng != null)
+          ? _haversineKm(_currentLoc!, _dropoffLatLng!)
+          : 5.0;
 
-  double _fareFor(VehicleType type) {
-    const baseFare = 3.25;
-    const perKm = 1.15;
-    return (baseFare + (_distanceKm * perKm)) * type.multiplier;
-  }
+  double _fare(VehicleType t) => (3.25 + _distKm * 1.15) * t.multiplier;
 
-  // ─────────────────────────────────────────────────────────────────
-  // Ride lifecycle helpers
-  // ─────────────────────────────────────────────────────────────────
+  // ── Ride lifecycle ────────────────────────────────────────────────
 
-  void _startWatchingRide(String rideId) {
-    _rideSubscription?.cancel();
-    _lastRouteStatus = null; // reset so first event always draws route
-
-    _rideSubscription = _rideRepository
-        .watchRide(rideId)
+  void _watchRide(String id) {
+    _rideSub?.cancel();
+    _lastRouteStatus = null;
+    _rideSub = _rideRepo
+        .watchRide(id)
         .listen(
           (ride) {
             if (!mounted) return;
-
-            final previousStatus = _activeRide?.status;
+            final prev = _activeRide?.status;
             setState(() => _activeRide = ride);
 
-            // Only show snackbar on status transitions
-            if (ride.status != previousStatus) {
-              final statusMsg = switch (ride.status) {
+            if (ride.status != prev) {
+              final msg = switch (ride.status) {
                 RideStatus.booked => 'Driver booked your ride.',
                 RideStatus.arrived => 'Driver has arrived.',
                 RideStatus.inProgress => 'Ride in progress.',
@@ -535,76 +455,65 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 RideStatus.cancelled => 'Ride cancelled.',
                 _ => null,
               };
-              if (statusMsg != null) {
+              if (msg != null)
                 ScaffoldMessenger.of(
                   context,
-                ).showSnackBar(SnackBar(content: Text(statusMsg)));
-              }
+                ).showSnackBar(SnackBar(content: Text(msg)));
             }
 
-            // FIX: _updateDirectionsForRide now guards internally against
-            // re-fetching on every GPS ping — only refetches on status change.
-            unawaited(_updateDirectionsForRide(ride));
+            unawaited(_updateRoute(ride));
+            _applyProgress(ride);
 
-            // FIX: Only fit camera to rider position when status is booked
-            // (driver approaching pickup). During inProgress, the route bounds
-            // are already set by _updateDirectionsForRide and should not jump
-            // on every GPS update.
-            if (ride.status == RideStatus.booked) {
-              final riderLat = ride.riderLat;
-              final riderLng = ride.riderLng;
-              if (_currentLocation != null &&
-                  riderLat != null &&
-                  riderLng != null &&
-                  ride.status != previousStatus) {
-                // Only fit bounds on booked transition, not every GPS tick
-                unawaited(
-                  _fitMapToBounds(
-                    _currentLocation!,
-                    LatLng(riderLat, riderLng),
-                  ),
-                );
-              }
+            if (ride.status == RideStatus.booked &&
+                ride.status != prev &&
+                _currentLoc != null &&
+                ride.riderLat != null &&
+                ride.riderLng != null) {
+              unawaited(
+                _fitBounds(
+                  _currentLoc!,
+                  LatLng(ride.riderLat!, ride.riderLng!),
+                ),
+              );
             }
 
             if (ride.status == RideStatus.completed ||
                 ride.status == RideStatus.cancelled) {
-              _rideSubscription?.cancel();
+              _rideSub?.cancel();
               _radiusTimer?.cancel();
-              _positionSubscription?.cancel();
+              _posSub?.cancel();
               setState(() {
                 _activeRideId = null;
                 _activeRide = null;
                 _lastRouteStatus = null;
+                _routeInfo = null;
               });
               _clearPolylines();
             }
           },
-          onError: (error) {
+          onError: (e) {
             if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Ride tracking failed: $error')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('Ride tracking failed: $e')));
           },
         );
   }
 
-  void _startRadiusExpansion(String rideId) {
+  void _startRadiusExpansion(String id) {
     _radiusTimer?.cancel();
     _searchRadiusKm = _initialRadiusKm;
-    _radiusTimer = Timer.periodic(_radiusStepInterval, (timer) async {
+    _radiusTimer = Timer.periodic(_radiusStepInterval, (t) async {
       final ride = _activeRide;
-      if (ride == null || ride.status != RideStatus.requested) {
-        timer.cancel();
-        return;
-      }
-      if (_searchRadiusKm >= _maxRadiusKm) {
-        timer.cancel();
+      if (ride == null ||
+          ride.status != RideStatus.requested ||
+          _searchRadiusKm >= _maxRadiusKm) {
+        t.cancel();
         return;
       }
       _searchRadiusKm = min(_searchRadiusKm + _radiusStepKm, _maxRadiusKm);
-      await _rideRepository.expandSearchRadius(
-        rideId: rideId,
+      await _rideRepo.expandSearchRadius(
+        rideId: id,
         newRadiusKm: _searchRadiusKm,
         maxRadiusKm: _maxRadiusKm,
       );
@@ -612,43 +521,38 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     });
   }
 
-  void _startCustomerLocationUpdates(String rideId) {
-    _positionSubscription?.cancel();
-    _positionSubscription = Geolocator.getPositionStream(
+  void _startLocationUpdates(String id) {
+    _posSub?.cancel();
+    _posSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 10,
       ),
-    ).listen((position) {
-      final latLng = LatLng(position.latitude, position.longitude);
-      _currentLocation = latLng;
-      if (_activeRideId != null) {
-        _rideRepository.updateCustomerLocation(
-          rideId: rideId,
-          lat: latLng.latitude,
-          lng: latLng.longitude,
+    ).listen((pos) {
+      final ll = LatLng(pos.latitude, pos.longitude);
+      _currentLoc = ll;
+      if (_activeRideId != null)
+        _rideRepo.updateCustomerLocation(
+          rideId: id,
+          lat: ll.latitude,
+          lng: ll.longitude,
         );
-      }
+      final ride = _activeRide;
+      if (ride != null) _applyProgress(ride);
     });
   }
 
   Future<void> _requestRide() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-
-    if (_dropoffController.text.trim().isEmpty) {
+    if (_dropoffCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter a dropoff location.')),
       );
       return;
     }
-
-    if (_dropoffLatLng == null) {
-      final ok = await _resolveDropoffFromText();
-      if (!ok) return;
-    }
-
-    if (_currentLocation == null || _dropoffLatLng == null) {
+    if (_dropoffLatLng == null && !await _resolveDropoff()) return;
+    if (_currentLoc == null || _dropoffLatLng == null) {
       if (!mounted) return;
       // ignore: use_build_context_synchronously
       ScaffoldMessenger.of(context).showSnackBar(
@@ -656,62 +560,51 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       );
       return;
     }
-
-    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    debugPrint('[RequestCheck] pickupLoc  : $_currentLocation');
-    debugPrint('[RequestCheck] dropoffLoc : $_dropoffLatLng');
-    debugPrint('[RequestCheck] dropoffTxt : ${_dropoffController.text}');
-    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
     setState(() => _isRequesting = true);
     try {
-      final request = RideRequest(
+      final req = RideRequest(
         id: '',
         customerId: user.uid,
         riderId: null,
-        pickup: _pickupController.text.trim(),
-        dropoff: _dropoffController.text.trim(),
+        pickup: _pickupCtrl.text.trim(),
+        dropoff: _dropoffCtrl.text.trim(),
         status: RideStatus.requested,
-        vehicleType: _selectedVehicle,
-        estimatedFare: _fareFor(_selectedVehicle),
-        distanceKm: _distanceKm,
+        vehicleType: _vehicle,
+        estimatedFare: _fare(_vehicle),
+        distanceKm: _distKm,
         createdAt: null,
-        pickupLat: _currentLocation!.latitude,
-        pickupLng: _currentLocation!.longitude,
+        pickupLat: _currentLoc!.latitude,
+        pickupLng: _currentLoc!.longitude,
         dropoffLat: _dropoffLatLng!.latitude,
         dropoffLng: _dropoffLatLng!.longitude,
-        customerLat: _currentLocation!.latitude,
-        customerLng: _currentLocation!.longitude,
+        customerLat: _currentLoc!.latitude,
+        customerLng: _currentLoc!.longitude,
         riderLat: null,
         riderLng: null,
         searchRadiusKm: _initialRadiusKm,
         maxRadiusKm: _maxRadiusKm,
       );
-
-      final rideId = await _rideRepository.requestRide(request);
-
+      final id = await _rideRepo.requestRide(req);
       if (!mounted) return;
       setState(() {
-        _activeRideId = rideId;
+        _activeRideId = id;
         _searchRadiusKm = _initialRadiusKm;
       });
-
-      _startWatchingRide(rideId);
-      _startRadiusExpansion(rideId);
-      _startCustomerLocationUpdates(rideId);
-
+      _watchRide(id);
+      _startRadiusExpansion(id);
+      _startLocationUpdates(id);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${_selectedVehicle.label} requested. Est. PKR${_fareFor(_selectedVehicle).toStringAsFixed(2)}',
+            '${_vehicle.label} requested. Est. PKR${_fare(_vehicle).toStringAsFixed(2)}',
           ),
         ),
       );
-    } catch (error) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Failed to request ride: $error')));
+      ).showSnackBar(SnackBar(content: Text('Failed to request ride: $e')));
     } finally {
       if (mounted) setState(() => _isRequesting = false);
     }
@@ -719,99 +612,90 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   Future<void> _cancelRide() async {
     if (_activeRideId == null) return;
-
-    final confirm = await showDialog<bool>(
+    final ok = await showDialog<bool>(
       context: context,
       builder:
-          (context) => AlertDialog(
+          (ctx) => AlertDialog(
             title: const Text('Cancel ride?'),
             content: const Text(
               'Do you want to cancel your current ride request?',
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
+                onPressed: () => Navigator.pop(ctx, false),
                 child: const Text('No'),
               ),
               FilledButton(
-                onPressed: () => Navigator.of(context).pop(true),
+                onPressed: () => Navigator.pop(ctx, true),
                 child: const Text('Cancel ride'),
               ),
             ],
           ),
     );
-
-    if (confirm != true) return;
-
+    if (ok != true) return;
     setState(() => _isCancelling = true);
     try {
-      await _rideRepository.cancelRide(_activeRideId!);
+      await _rideRepo.cancelRide(_activeRideId!);
       _clearPolylines();
-    } catch (error) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Could not cancel ride: $error')));
+      ).showSnackBar(SnackBar(content: Text('Could not cancel: $e')));
     } finally {
       if (mounted) setState(() => _isCancelling = false);
     }
   }
 
   Future<void> _sendMessage() async {
-    final rideId = _activeRideId;
+    final id = _activeRideId;
     final user = FirebaseAuth.instance.currentUser;
-    if (rideId == null || user == null) return;
-
-    final text = _messageController.text.trim();
+    if (id == null || user == null) return;
+    final text = _messageCtrl.text.trim();
     if (text.isEmpty) return;
-
-    _messageController.clear();
-    await _rideRepository.sendMessage(
-      rideId: rideId,
+    _messageCtrl.clear();
+    await _rideRepo.sendMessage(
+      rideId: id,
       senderId: user.uid,
       senderRole: 'customer',
       text: text,
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Computed getters
-  // ─────────────────────────────────────────────────────────────────
+  // ── Getters ───────────────────────────────────────────────────────
 
-  bool get _hasActiveRide => _activeRideId != null;
+  bool get _hasRide => _activeRideId != null;
 
-  String get _statusLabel {
-    return switch (_activeRide?.status) {
-      RideStatus.requested =>
-        'Searching nearby drivers (${_searchRadiusKm.toStringAsFixed(0)} km)...',
-      RideStatus.booked => 'Driver booked. On the way.',
-      RideStatus.arrived => 'Driver has arrived.',
-      RideStatus.inProgress => 'Ride in progress.',
-      RideStatus.completed => 'Ride completed.',
-      RideStatus.cancelled => 'Ride cancelled.',
-      _ => '',
-    };
-  }
+  bool get _showHUD =>
+      _routeInfo != null &&
+      _activeRide != null &&
+      (_activeRide!.status == RideStatus.booked ||
+          _activeRide!.status == RideStatus.inProgress);
 
-  Color _statusColor(ThemeData theme) {
-    return switch (_activeRide?.status) {
-      RideStatus.booked => Colors.green,
-      RideStatus.arrived => theme.colorScheme.primary,
-      RideStatus.inProgress => theme.colorScheme.primary,
-      RideStatus.cancelled => theme.colorScheme.error,
-      _ => theme.colorScheme.secondary,
-    };
-  }
+  String get _statusLabel => switch (_activeRide?.status) {
+    RideStatus.requested =>
+      'Searching nearby drivers (${_searchRadiusKm.toStringAsFixed(0)} km)...',
+    RideStatus.booked => 'Driver booked. On the way.',
+    RideStatus.arrived => 'Driver has arrived.',
+    RideStatus.inProgress => 'Ride in progress.',
+    RideStatus.completed => 'Ride completed.',
+    RideStatus.cancelled => 'Ride cancelled.',
+    _ => '',
+  };
 
-  // ─────────────────────────────────────────────────────────────────
-  // Route status badge
-  // ─────────────────────────────────────────────────────────────────
+  Color _statusColor(ThemeData t) => switch (_activeRide?.status) {
+    RideStatus.booked => Colors.green,
+    RideStatus.arrived => t.colorScheme.primary,
+    RideStatus.inProgress => t.colorScheme.primary,
+    RideStatus.cancelled => t.colorScheme.error,
+    _ => t.colorScheme.secondary,
+  };
 
-  Widget _buildRouteBadge(ThemeData theme) {
-    if (_routeState == _RouteState.idle || _routeState == _RouteState.success) {
+  // ── Route badge ───────────────────────────────────────────────────
+
+  Widget _routeBadge(ThemeData theme) {
+    if (_routeState == _RouteState.idle || _routeState == _RouteState.success)
       return const SizedBox.shrink();
-    }
-
     final (icon, color, label) = switch (_routeState) {
       _RouteState.loading => (
         Icons.route_outlined,
@@ -845,10 +729,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       ),
       _ => (Icons.info_outline, theme.colorScheme.secondary, ''),
     };
-
     return GestureDetector(
       onTap:
-          _routeErrorDetail == null
+          _routeError == null
               ? null
               : () => showModalBottomSheet<void>(
                 context: context,
@@ -873,10 +756,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                             ],
                           ),
                           const SizedBox(height: 14),
-                          Text(
-                            _routeErrorDetail!,
-                            style: theme.textTheme.bodyMedium,
-                          ),
+                          Text(_routeError!, style: theme.textTheme.bodyMedium),
                         ],
                       ),
                     ),
@@ -903,7 +783,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 ),
               ),
             ),
-            if (_routeErrorDetail != null) ...[
+            if (_routeError != null) ...[
               const SizedBox(width: 4),
               Icon(Icons.info_outline, size: 13, color: color.withOpacity(0.7)),
             ],
@@ -913,26 +793,22 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final mapCenter = _currentLocation ?? _fallbackLocation;
+    final center = _currentLoc ?? _fallback;
     final riderLat = _activeRide?.riderLat;
     final riderLng = _activeRide?.riderLng;
+    final showRider = _activeRide?.status != RideStatus.inProgress;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Book a Ride'),
         actions: [
           IconButton(
-            onPressed:
-                (_isRequesting || _hasActiveRide)
-                    ? null
-                    : _authRepository.signOut,
+            onPressed: (_isRequesting || _hasRide) ? null : _authRepo.signOut,
             icon: const Icon(Icons.logout),
             tooltip: 'Sign out',
           ),
@@ -944,78 +820,90 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── Map ───────────────────────────────────────────────
+              // ── Map with HUD overlay ───────────────────────────
               ClipRRect(
                 borderRadius: BorderRadius.circular(18),
                 child: SizedBox(
-                  height: 240,
-                  child: GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: mapCenter,
-                      zoom: 14,
-                    ),
-                    gestureRecognizers: {
-                      Factory<OneSequenceGestureRecognizer>(
-                        () => EagerGestureRecognizer(),
-                      ),
-                    },
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                      if (_currentLocation != null)
-                        _moveCamera(_currentLocation!);
-                    },
-                    onTap: _onMapTapped,
-                    myLocationEnabled: _currentLocation != null,
-                    myLocationButtonEnabled: true,
-                    zoomControlsEnabled: true,
-                    polylines: _polylines,
-                    markers: {
-                      Marker(
-                        markerId: const MarkerId('pickup'),
-                        position: mapCenter,
-                        infoWindow: const InfoWindow(title: 'Pickup'),
-                      ),
-                      if (_dropoffLatLng != null)
-                        Marker(
-                          markerId: const MarkerId('dropoff'),
-                          position: _dropoffLatLng!,
-                          infoWindow: const InfoWindow(title: 'Dropoff'),
-                          icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueAzure,
+                  height: 260,
+                  child: Stack(
+                    children: [
+                      // Google Map
+                      Positioned.fill(
+                        child: GoogleMap(
+                          initialCameraPosition: CameraPosition(
+                            target: center,
+                            zoom: 14,
                           ),
+                          gestureRecognizers: {
+                            Factory<OneSequenceGestureRecognizer>(
+                              () => EagerGestureRecognizer(),
+                            ),
+                          },
+                          onMapCreated: (c) {
+                            _mapCtrl = c;
+                            if (_currentLoc != null) _moveCamera(_currentLoc!);
+                          },
+                          onTap: _onMapTapped,
+                          myLocationEnabled: _currentLoc != null,
+                          myLocationButtonEnabled: true,
+                          zoomControlsEnabled: true,
+                          polylines: _polylines,
+                          markers: {
+                            Marker(
+                              markerId: const MarkerId('pickup'),
+                              position: center,
+                              infoWindow: const InfoWindow(title: 'Pickup'),
+                            ),
+                            if (_dropoffLatLng != null)
+                              Marker(
+                                markerId: const MarkerId('dropoff'),
+                                position: _dropoffLatLng!,
+                                infoWindow: const InfoWindow(title: 'Dropoff'),
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueAzure,
+                                ),
+                              ),
+                            if (showRider &&
+                                riderLat != null &&
+                                riderLng != null)
+                              Marker(
+                                markerId: const MarkerId('rider'),
+                                position: LatLng(riderLat, riderLng),
+                                infoWindow: const InfoWindow(title: 'Driver'),
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueGreen,
+                                ),
+                              ),
+                          },
                         ),
-                      if (riderLat != null && riderLng != null)
-                        Marker(
-                          markerId: const MarkerId('rider'),
-                          position: LatLng(riderLat, riderLng),
-                          infoWindow: const InfoWindow(title: 'Driver'),
-                          icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueGreen,
-                          ),
+                      ),
+
+                      // Navigation HUD — top banner + bottom ETA bar
+                      if (_showHUD)
+                        NavigationHUD(
+                          steps: _routeInfo!.steps,
+                          currentPos: _currentLoc ?? center,
+                          totalDistM: _routeInfo!.totalDistanceM,
+                          etaSeconds: _routeInfo!.totalDurationSec,
+                          rideStatus: _activeRide!.status,
                         ),
-                    },
+                    ],
                   ),
                 ),
               ),
               const SizedBox(height: 12),
 
-              // ── Loading bars ──────────────────────────────────────
-              if (_loadingLocation)
+              if (_loadingLoc)
                 const Padding(
                   padding: EdgeInsets.only(bottom: 8),
                   child: LinearProgressIndicator(minHeight: 2),
                 ),
 
-              // ── Route badge (only during active ride) ─────────────
-              if (_hasActiveRide) ...[
-                _buildRouteBadge(theme),
+              if (_hasRide) ...[
+                _routeBadge(theme),
                 if (_routeState != _RouteState.idle &&
                     _routeState != _RouteState.success)
                   const SizedBox(height: 8),
-              ],
-
-              // ── Ride status banner ────────────────────────────────
-              if (_hasActiveRide) ...[
                 const SizedBox(height: 4),
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
@@ -1056,39 +944,36 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 const SizedBox(height: 12),
               ],
 
-              // ── Location fields ───────────────────────────────────
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
                   child: RideLocationFields(
-                    pickupController: _pickupController,
-                    dropoffController: _dropoffController,
-                    enabled: !_hasActiveRide,
+                    pickupController: _pickupCtrl,
+                    dropoffController: _dropoffCtrl,
+                    enabled: !_hasRide,
                     onUseCurrentLocation: _initLocation,
-                    onDropoffSubmitted: (_) => _resolveDropoffFromText(),
+                    onDropoffSubmitted: (_) => _resolveDropoff(),
                   ),
                 ),
               ),
               const SizedBox(height: 16),
 
-              // ── Vehicle picker ────────────────────────────────────
-              if (!_hasActiveRide) ...[
+              if (!_hasRide) ...[
                 Text('Choose vehicle', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 8),
                 ...VehicleType.values.map(
-                  (type) => Padding(
+                  (t) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: VehicleOptionCard(
-                      type: type,
-                      selected: type == _selectedVehicle,
-                      fare: _fareFor(type),
-                      onTap: () => setState(() => _selectedVehicle = type),
+                      type: t,
+                      selected: t == _vehicle,
+                      fare: _fare(t),
+                      onTap: () => setState(() => _vehicle = t),
                     ),
                   ),
                 ),
               ],
 
-              // ── Fare summary ──────────────────────────────────────
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -1097,11 +982,11 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                     children: [
                       Text(
                         _dropoffLatLng != null
-                            ? 'Distance: ${_distanceKm.toStringAsFixed(1)} km'
-                            : 'Est. distance: ~${_distanceKm.toStringAsFixed(1)} km',
+                            ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
+                            : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
                       ),
                       Text(
-                        'Est. PKR ${(_fareFor(_selectedVehicle) * 50).toStringAsFixed(2)}',
+                        'Est. PKR ${(_fare(_vehicle) * 50).toStringAsFixed(2)}',
                         style: theme.textTheme.titleMedium,
                       ),
                     ],
@@ -1109,31 +994,27 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 ),
               ),
 
-              // ── Messaging ─────────────────────────────────────────
-              if (_hasActiveRide) ...[
+              if (_hasRide) ...[
                 const SizedBox(height: 16),
                 Text('Messages', style: theme.textTheme.titleMedium),
                 const SizedBox(height: 8),
                 SizedBox(
                   height: 180,
                   child: StreamBuilder<List<RideMessage>>(
-                    stream: _rideRepository.watchMessages(_activeRideId!),
-                    builder: (context, snapshot) {
-                      final messages = snapshot.data ?? [];
-                      if (messages.isEmpty) {
+                    stream: _rideRepo.watchMessages(_activeRideId!),
+                    builder: (ctx, snap) {
+                      final msgs = snap.data ?? [];
+                      if (msgs.isEmpty)
                         return const Center(child: Text('No messages yet.'));
-                      }
                       return ListView.builder(
                         reverse: true,
-                        itemCount: messages.length,
-                        itemBuilder: (context, index) {
-                          final message = messages[index];
-                          return ListTile(
-                            dense: true,
-                            title: Text(message.text),
-                            subtitle: Text(message.senderRole),
-                          );
-                        },
+                        itemCount: msgs.length,
+                        itemBuilder:
+                            (_, i) => ListTile(
+                              dense: true,
+                              title: Text(msgs[i].text),
+                              subtitle: Text(msgs[i].senderRole),
+                            ),
                       );
                     },
                   ),
@@ -1142,7 +1023,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   children: [
                     Expanded(
                       child: TextField(
-                        controller: _messageController,
+                        controller: _messageCtrl,
                         decoration: const InputDecoration(
                           hintText: 'Message driver',
                         ),
@@ -1159,12 +1040,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           ),
         ),
       ),
-
-      // ── Bottom action button ─────────────────────────────────────
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child:
-            _hasActiveRide
+            _hasRide
                 ? FilledButton.icon(
                   onPressed:
                       (_isCancelling ||
@@ -1193,12 +1072,12 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                 )
                 : FilledButton.icon(
                   onPressed:
-                      (_isRequesting || _loadingLocation) ? null : _requestRide,
+                      (_isRequesting || _loadingLoc) ? null : _requestRide,
                   icon: const Icon(Icons.local_taxi),
                   label: Text(
                     _isRequesting
                         ? 'Requesting...'
-                        : 'Request ${_selectedVehicle.label}',
+                        : 'Request ${_vehicle.label}',
                   ),
                   style: FilledButton.styleFrom(
                     minimumSize: const Size.fromHeight(54),

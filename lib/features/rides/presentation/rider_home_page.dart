@@ -5,9 +5,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_polyline_points/flutter_polyline_points.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:ride_sharing_app/features/rides/presentation/direction_parser.dart';
 
 import '../../../app/config/maps_config.dart';
 import '../../auth/data/auth_repository.dart';
@@ -15,6 +16,7 @@ import '../data/ride_repository.dart';
 import '../domain/ride_message.dart';
 import '../domain/ride_request.dart';
 import '../domain/vehicle_type.dart';
+import 'navigation_hud.dart';
 
 enum _RouteState {
   idle,
@@ -29,47 +31,40 @@ enum _RouteState {
 
 class RiderHomePage extends StatefulWidget {
   const RiderHomePage({super.key});
-
   @override
   State<RiderHomePage> createState() => _RiderHomePageState();
 }
 
 class _RiderHomePageState extends State<RiderHomePage>
     with SingleTickerProviderStateMixin {
-  // ── Repos / controllers ───────────────────────────────────────────
-  final _rideRepository = RideRepository();
-  final _authRepository = AuthRepository();
-  final _messageController = TextEditingController();
+  final _rideRepo = RideRepository();
+  final _authRepo = AuthRepository();
+  final _messageCtrl = TextEditingController();
 
-  // ── Map ───────────────────────────────────────────────────────────
-  GoogleMapController? _mapController;
-  LatLng? _currentLocation;
-  bool _loadingLocation = true;
+  GoogleMapController? _mapCtrl;
+  LatLng? _currentLoc;
+  double _currentHeading = 0;
+  bool _loadingLoc = true;
   Set<Polyline> _polylines = {};
+  List<LatLng> _routePoints = [];
 
-  // ── Route state ───────────────────────────────────────────────────
   _RouteState _routeState = _RouteState.idle;
-  String? _routeErrorDetail;
-
-  // FIX: track last status so route is only re-fetched on status change,
-  // not on every rider GPS position update.
+  String? _routeError;
   RideStatus? _lastRouteStatus;
 
-  // ── Ride ──────────────────────────────────────────────────────────
+  RouteInfo? _routeInfo;
+
   String? _activeRideId;
   RideRequest? _activeRide;
-  StreamSubscription<RideRequest>? _rideSubscription;
-  StreamSubscription<Position>? _positionSubscription;
+  StreamSubscription<RideRequest>? _rideSub;
+  StreamSubscription<Position>? _posSub;
 
-  // ── Panel slide-in animation ──────────────────────────────────────
   late final AnimationController _panelCtrl;
   late final Animation<Offset> _panelSlide;
 
-  static const _fallbackLocation = LatLng(37.42796133580664, -122.085749655962);
+  static const _fallback = LatLng(37.42796133580664, -122.085749655962);
 
-  // ─────────────────────────────────────────────────────────────────
-  // Lifecycle
-  // ─────────────────────────────────────────────────────────────────
+  // ── Lifecycle ─────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -87,87 +82,60 @@ class _RiderHomePageState extends State<RiderHomePage>
 
   @override
   void dispose() {
-    _messageController.dispose();
-    _mapController?.dispose();
-    _rideSubscription?.cancel();
-    _positionSubscription?.cancel();
+    _messageCtrl.dispose();
+    _mapCtrl?.dispose();
+    _rideSub?.cancel();
+    _posSub?.cancel();
     _panelCtrl.dispose();
     super.dispose();
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Location
-  // ─────────────────────────────────────────────────────────────────
+  // ── Location ──────────────────────────────────────────────────────
 
   Future<void> _initLocation() async {
     try {
-      final hasPermission = await _ensureLocationPermission();
-      if (!hasPermission) {
-        if (!mounted) return;
-        setState(() => _loadingLocation = false);
+      if (!await _ensurePermission()) {
+        if (mounted) setState(() => _loadingLoc = false);
         return;
       }
-
-      final position = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
       ).timeout(const Duration(seconds: 12));
-
       if (!mounted) return;
       setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
-        _loadingLocation = false;
+        _currentLoc = LatLng(pos.latitude, pos.longitude);
+        _currentHeading = pos.heading.isNaN ? 0 : pos.heading;
+        _loadingLoc = false;
       });
-      await _moveCamera(_currentLocation!);
+      await _moveCamera(_currentLoc!);
     } catch (_) {
       final last = await Geolocator.getLastKnownPosition();
-      final latLng =
-          last == null
-              ? _fallbackLocation
-              : LatLng(last.latitude, last.longitude);
+      final ll =
+          last == null ? _fallback : LatLng(last.latitude, last.longitude);
       if (!mounted) return;
       setState(() {
-        _currentLocation = latLng;
-        _loadingLocation = false;
+        _currentLoc = ll;
+        _loadingLoc = false;
       });
-      await _moveCamera(latLng);
+      await _moveCamera(ll);
     }
   }
 
-  Future<bool> _ensureLocationPermission() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enable location service on the emulator.'),
-        ),
-      );
-      return false;
-    }
-
-    var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-    }
-
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
-      if (!mounted) return false;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Location permission denied.')),
-      );
-      return false;
-    }
-    return true;
+  Future<bool> _ensurePermission() async {
+    if (!await Geolocator.isLocationServiceEnabled()) return false;
+    var p = await Geolocator.checkPermission();
+    if (p == LocationPermission.denied)
+      p = await Geolocator.requestPermission();
+    return p != LocationPermission.denied &&
+        p != LocationPermission.deniedForever;
   }
 
-  Future<void> _moveCamera(LatLng target) async {
-    await _mapController?.animateCamera(CameraUpdate.newLatLngZoom(target, 15));
-  }
+  Future<void> _moveCamera(LatLng t) async =>
+      _mapCtrl?.animateCamera(CameraUpdate.newLatLngZoom(t, 15));
 
-  Future<void> _fitMapToBounds(LatLng a, LatLng b) async {
+  Future<void> _fitBounds(LatLng a, LatLng b) async {
     final bounds = LatLngBounds(
       southwest: LatLng(
         min(a.latitude, b.latitude),
@@ -178,336 +146,311 @@ class _RiderHomePageState extends State<RiderHomePage>
         max(a.longitude, b.longitude),
       ),
     );
-    await _mapController?.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds, 72),
-    );
+    await _mapCtrl?.animateCamera(CameraUpdate.newLatLngBounds(bounds, 80));
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Route drawing
-  //
-  // FIX 1: Route only re-fetched when ride STATUS changes, not on every
-  //        GPS position update — prevents Directions API spam and UI refresh.
-  // FIX 2: inProgress uses _currentLocation (live) → dropoff, with stored
-  //        riderLat/riderLng as fallback. Origin is the rider's current
-  //        position, not the static pickup point.
-  // FIX 3: Camera bounds only set once per status transition.
-  // FIX 4: arrived status explicitly clears polyline (was falling through
-  //        to the else branch but only by coincidence — now explicit).
-  // ─────────────────────────────────────────────────────────────────
+  // ── Route ─────────────────────────────────────────────────────────
 
-  Future<void> _updateDirectionsForRide(
-    RideRequest ride, {
-    bool forceRefetch = false,
-  }) async {
-    // Only re-fetch when status changes to avoid hammering the API
-    // and causing constant rebuilds on GPS updates.
-    final statusChanged = ride.status != _lastRouteStatus;
-    if (!statusChanged && !forceRefetch) {
-      // Just refresh the marker; no route re-fetch needed.
+  Future<void> _updateRoute(RideRequest ride, {bool force = false}) async {
+    if (ride.status != _lastRouteStatus || force) {
+      // proceed
+    } else {
       if (mounted) setState(() {});
       return;
     }
 
-    // Guard 1: API key
     if (MapsConfig.directionsApiKey == 'YOUR_GOOGLE_DIRECTIONS_API_KEY') {
-      if (mounted) {
+      if (mounted)
         setState(() {
           _routeState = _RouteState.noApiKey;
-          _routeErrorDetail =
-              'MapsConfig.directionsApiKey is still the placeholder value. '
-              'Replace it in maps_config.dart.';
+          _routeError = 'Replace directionsApiKey in maps_config.dart.';
           _polylines = {};
           _lastRouteStatus = ride.status;
         });
-      }
-      debugPrint('[RiderRoute] No API key configured.');
       return;
     }
 
-    LatLng? origin;
-    LatLng? destination;
+    LatLng? origin, dest;
 
     if (ride.status == RideStatus.booked) {
-      // Rider current position → Pickup
-      // Use live GPS first; fall back to stored riderLat/riderLng.
-      final oLat = _currentLocation?.latitude ?? ride.riderLat;
-      final oLng = _currentLocation?.longitude ?? ride.riderLng;
+      final oLat = _currentLoc?.latitude ?? ride.riderLat;
+      final oLng = _currentLoc?.longitude ?? ride.riderLng;
       if (oLat != null &&
           oLng != null &&
           ride.pickupLat != null &&
           ride.pickupLng != null) {
         origin = LatLng(oLat, oLng);
-        destination = LatLng(ride.pickupLat!, ride.pickupLng!);
-        debugPrint('[RiderRoute] booked  origin=$origin  dest=$destination');
-      } else {
-        debugPrint(
-          '[RiderRoute] booked — coords missing. '
-          'currentLocation=$_currentLocation '
-          'riderLat=${ride.riderLat} pickupLat=${ride.pickupLat}',
-        );
+        dest = LatLng(ride.pickupLat!, ride.pickupLng!);
       }
     } else if (ride.status == RideStatus.inProgress) {
-      // FIX: Origin is the rider's CURRENT live position → Dropoff.
-      // This is correct: the rider is driving toward the dropoff.
-      // Use _currentLocation (updated every 10m by the stream) with
-      // riderLat/riderLng from Firestore as fallback.
-      final oLat = _currentLocation?.latitude ?? ride.riderLat;
-      final oLng = _currentLocation?.longitude ?? ride.riderLng;
+      final oLat = _currentLoc?.latitude ?? ride.riderLat;
+      final oLng = _currentLoc?.longitude ?? ride.riderLng;
       if (oLat != null &&
           oLng != null &&
           ride.dropoffLat != null &&
           ride.dropoffLng != null) {
         origin = LatLng(oLat, oLng);
-        destination = LatLng(ride.dropoffLat!, ride.dropoffLng!);
-        debugPrint(
-          '[RiderRoute] inProgress  origin=$origin  dest=$destination',
-        );
-      } else {
-        debugPrint(
-          '[RiderRoute] inProgress — coords missing. '
-          'currentLocation=$_currentLocation '
-          'riderLat=${ride.riderLat} dropoffLat=${ride.dropoffLat}',
-        );
+        dest = LatLng(ride.dropoffLat!, ride.dropoffLng!);
       }
     } else {
-      // arrived / completed / cancelled / requested → clear polyline
-      debugPrint(
-        '[RiderRoute] Status=${ride.status.name} — clearing polyline.',
-      );
       _clearPolylines();
-      if (mounted) setState(() => _lastRouteStatus = ride.status);
+      if (mounted)
+        setState(() {
+          _lastRouteStatus = ride.status;
+          _routeInfo = null;
+        });
       return;
     }
 
-    // Guard 2: coords resolved?
-    if (origin == null || destination == null) {
-      if (mounted) {
+    if (origin == null || dest == null) {
+      if (mounted)
         setState(() {
           _routeState = _RouteState.missingCoords;
-          _routeErrorDetail =
-              'Status is ${ride.status.name} but coordinates are null.\n'
-              'currentLocation=$_currentLocation\n'
-              'riderLat=${ride.riderLat}  pickupLat=${ride.pickupLat}\n'
-              'dropoffLat=${ride.dropoffLat}';
+          _routeError = 'Status ${ride.status.name}: coords not yet available.';
           _polylines = {};
           _lastRouteStatus = ride.status;
         });
-      }
       return;
     }
 
-    if (mounted) {
-      setState(() {
-        _routeState = _RouteState.loading;
-        _lastRouteStatus = ride.status;
-      });
-    }
-
-    final points = PolylinePoints();
-    late final PolylineResult result;
+    if (mounted) setState(() => _routeState = _RouteState.loading);
 
     try {
-      result = await points.getRouteBetweenCoordinates(
-        request: PolylineRequest(
-          origin: PointLatLng(origin.latitude, origin.longitude),
-          destination: PointLatLng(destination.latitude, destination.longitude),
-          mode: TravelMode.driving,
-        ),
-        googleApiKey: MapsConfig.directionsApiKey,
-      );
-    } catch (e, st) {
-      debugPrint('[RiderRoute] Exception: $e\n$st');
+      final uri =
+          Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
+            'origin': '${origin.latitude},${origin.longitude}',
+            'destination': '${dest.latitude},${dest.longitude}',
+            'mode': 'driving',
+            'key': MapsConfig.directionsApiKey,
+          });
+      final res = await http.get(uri).timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+
+      if (res.statusCode != 200) {
+        setState(() {
+          _routeState = _RouteState.apiError;
+          _routeError = 'HTTP ${res.statusCode}';
+          _polylines = {};
+          _lastRouteStatus = ride.status;
+        });
+        return;
+      }
+
+      final info = RouteInfo.fromJson(res.body);
+      if (info == null || info.steps.isEmpty) {
+        setState(() {
+          _routeState = _RouteState.emptyResult;
+          _polylines = {};
+          _lastRouteStatus = ride.status;
+        });
+        return;
+      }
+
+      final pts = info.steps
+          .expand((s) => s.polylinePoints)
+          .toList(growable: false);
+      setState(() {
+        _routeInfo = info;
+        _routePoints = pts;
+        _routeState = _RouteState.success;
+        _routeError = null;
+        _lastRouteStatus = ride.status;
+      });
+      _applyProgress(ride);
+      unawaited(_fitBounds(origin, dest));
+    } catch (e) {
       if (!mounted) return;
       setState(() {
         _routeState = _RouteState.exception;
-        _routeErrorDetail = e.toString();
+        _routeError = e.toString();
         _polylines = {};
+        _lastRouteStatus = ride.status;
       });
-      return;
     }
-
-    if (!mounted) return;
-
-    // Guard 3: API error message
-    if (result.errorMessage != null && result.errorMessage!.isNotEmpty) {
-      debugPrint('[RiderRoute] API error: ${result.errorMessage}');
-      setState(() {
-        _routeState = _RouteState.apiError;
-        _routeErrorDetail = result.errorMessage;
-        _polylines = {};
-      });
-      return;
-    }
-
-    // Guard 4: empty points
-    if (result.points.isEmpty) {
-      debugPrint(
-        '[RiderRoute] 0 points returned. '
-        'origin=$origin  destination=$destination',
-      );
-      setState(() {
-        _routeState = _RouteState.emptyResult;
-        _routeErrorDetail =
-            'Directions API returned no route points.\n'
-            'origin: $origin\ndestination: $destination\n'
-            'Ensure the Directions API is enabled for your key.';
-        _polylines = {};
-      });
-      return;
-    }
-
-    debugPrint('[RiderRoute] ${result.points.length} points drawn.');
-
-    final polyline = Polyline(
-      polylineId: const PolylineId('route'),
-      color: Theme.of(context).colorScheme.primary,
-      width: 6,
-      points: result.points
-          .map((p) => LatLng(p.latitude, p.longitude))
-          .toList(growable: false),
-    );
-
-    setState(() {
-      _polylines = {polyline};
-      _routeState = _RouteState.success;
-      _routeErrorDetail = null;
-    });
-
-    // FIX: Only fit bounds on the status-change fetch, not on every GPS tick.
-    unawaited(_fitMapToBounds(origin, destination));
   }
 
   void _clearPolylines() {
-    if (_polylines.isNotEmpty || _routeState != _RouteState.idle) {
-      if (mounted) {
+    if (_polylines.isNotEmpty ||
+        _routeState != _RouteState.idle ||
+        _routePoints.isNotEmpty) {
+      if (mounted)
         setState(() {
           _polylines = {};
           _routeState = _RouteState.idle;
-          _routeErrorDetail = null;
+          _routeError = null;
+          _routePoints = [];
+          _routeInfo = null;
         });
-      }
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Distance helpers
-  // ─────────────────────────────────────────────────────────────────
+  void _applyProgress(RideRequest ride) {
+    if (_routePoints.isEmpty) return;
+    LatLng? cur, dest;
 
-  double _toRad(double d) => d * pi / 180;
+    if (ride.status == RideStatus.booked) {
+      final oLat = _currentLoc?.latitude ?? ride.riderLat;
+      final oLng = _currentLoc?.longitude ?? ride.riderLng;
+      if (oLat != null && oLng != null) cur = LatLng(oLat, oLng);
+      if (ride.pickupLat != null && ride.pickupLng != null)
+        dest = LatLng(ride.pickupLat!, ride.pickupLng!);
+    } else if (ride.status == RideStatus.inProgress) {
+      final oLat = _currentLoc?.latitude ?? ride.riderLat;
+      final oLng = _currentLoc?.longitude ?? ride.riderLng;
+      if (oLat != null && oLng != null) cur = LatLng(oLat, oLng);
+      if (ride.dropoffLat != null && ride.dropoffLng != null)
+        dest = LatLng(ride.dropoffLat!, ride.dropoffLng!);
+    } else {
+      return;
+    }
+
+    if (cur == null || dest == null) return;
+    if (_haversineKm(cur, dest) * 1000 <= 25) {
+      _clearPolylines();
+      return;
+    }
+
+    var ci = 0;
+    var cd = double.infinity;
+    for (var i = 0; i < _routePoints.length; i++) {
+      final d = _haversineKm(cur, _routePoints[i]);
+      if (d < cd) {
+        cd = d;
+        ci = i;
+      }
+    }
+    if (!mounted) return;
+    final theme = Theme.of(context);
+    setState(() {
+      _polylines = {
+        Polyline(
+          polylineId: const PolylineId('traveled'),
+          color: Colors.grey.shade400,
+          width: 6,
+          points: _routePoints.sublist(0, ci + 1),
+        ),
+        Polyline(
+          polylineId: const PolylineId('remaining'),
+          color: theme.colorScheme.primary,
+          width: 6,
+          points: _routePoints.sublist(ci),
+        ),
+      };
+    });
+  }
+
+  // ── Distance helpers ──────────────────────────────────────────────
+
+  double _rad(double d) => d * pi / 180;
 
   double _haversineKm(LatLng a, LatLng b) {
     const r = 6371.0;
-    final dLat = _toRad(b.latitude - a.latitude);
-    final dLon = _toRad(b.longitude - a.longitude);
+    final dLat = _rad(b.latitude - a.latitude);
+    final dLon = _rad(b.longitude - a.longitude);
     final h =
         pow(sin(dLat / 2), 2) +
-        cos(_toRad(a.latitude)) *
-            cos(_toRad(b.latitude)) *
-            pow(sin(dLon / 2), 2);
+        cos(_rad(a.latitude)) * cos(_rad(b.latitude)) * pow(sin(dLon / 2), 2);
     return 2 * r * asin(sqrt(h));
   }
 
-  double? _distanceToRideKm(RideRequest ride) {
-    if (_currentLocation == null ||
-        ride.pickupLat == null ||
-        ride.pickupLng == null)
+  double? _distToRideKm(RideRequest ride) {
+    if (_currentLoc == null || ride.pickupLat == null || ride.pickupLng == null)
       return null;
-    return _haversineKm(
-      _currentLocation!,
-      LatLng(ride.pickupLat!, ride.pickupLng!),
-    );
+    return _haversineKm(_currentLoc!, LatLng(ride.pickupLat!, ride.pickupLng!));
   }
 
   bool _withinRadius(RideRequest ride) {
-    final d = _distanceToRideKm(ride);
+    final d = _distToRideKm(ride);
     return d != null && d <= ride.searchRadiusKm;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Ride actions
-  // ─────────────────────────────────────────────────────────────────
+  // ── Ride actions ──────────────────────────────────────────────────
 
-  Future<void> _acceptRide(String rideId) async {
+  Future<void> _acceptRide(String id) async {
     final riderId = FirebaseAuth.instance.currentUser?.uid;
     if (riderId == null) return;
     try {
-      await _rideRepository.acceptRide(rideId: rideId, riderId: riderId);
+      LatLng? ll = _currentLoc;
+      if (ll == null) {
+        try {
+          final p = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+            ),
+          ).timeout(const Duration(seconds: 8));
+          ll = LatLng(p.latitude, p.longitude);
+        } catch (_) {
+          final last = await Geolocator.getLastKnownPosition();
+          if (last != null) ll = LatLng(last.latitude, last.longitude);
+        }
+      }
+      await _rideRepo.acceptRide(
+        rideId: id,
+        riderId: riderId,
+        riderLat: ll?.latitude,
+        riderLng: ll?.longitude,
+      );
       if (!mounted) return;
-      setState(() => _activeRideId = rideId);
-      _startWatchingRide(rideId);
-      _startRiderLocationUpdates(rideId);
+      if (ll != null) _currentLoc = ll;
+      setState(() => _activeRideId = id);
+      _watchRide(id);
+      _startLocUpdates(id);
       _panelCtrl.forward();
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Ride accepted!')));
-    } catch (error) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Failed to accept: $error')));
+      ).showSnackBar(SnackBar(content: Text('Failed to accept: $e')));
     }
   }
 
   Future<void> _markArrived() async {
-    if (_activeRideId == null) return;
-    await _rideRepository.markArrived(_activeRideId!);
-    // Polyline will be cleared by the stream when status updates to arrived.
-    // No need to call _clearPolylines() here — avoid double-setState.
+    if (_activeRideId != null) await _rideRepo.markArrived(_activeRideId!);
   }
 
   Future<void> _startRide() async {
-    if (_activeRideId == null) return;
-    await _rideRepository.startRide(_activeRideId!);
-    // Route will be drawn by the stream when status updates to inProgress.
+    if (_activeRideId != null) await _rideRepo.startRide(_activeRideId!);
   }
 
   Future<void> _completeRide() async {
-    if (_activeRideId == null) return;
-    await _rideRepository.completeRide(_activeRideId!);
-    // Polyline will be cleared by the stream when status updates to completed.
+    if (_activeRideId != null) await _rideRepo.completeRide(_activeRideId!);
   }
 
   Future<void> _sendMessage() async {
-    final rideId = _activeRideId;
+    final id = _activeRideId;
     final user = FirebaseAuth.instance.currentUser;
-    if (rideId == null || user == null) return;
-    final text = _messageController.text.trim();
+    if (id == null || user == null) return;
+    final text = _messageCtrl.text.trim();
     if (text.isEmpty) return;
-    _messageController.clear();
-    await _rideRepository.sendMessage(
-      rideId: rideId,
+    _messageCtrl.clear();
+    await _rideRepo.sendMessage(
+      rideId: id,
       senderId: user.uid,
       senderRole: 'rider',
       text: text,
     );
   }
 
-  void _startWatchingRide(String rideId) {
-    _rideSubscription?.cancel();
-    _lastRouteStatus = null; // reset so first event always draws route
-
-    _rideSubscription = _rideRepository.watchRide(rideId).listen((ride) {
+  void _watchRide(String id) {
+    _rideSub?.cancel();
+    _lastRouteStatus = null;
+    _rideSub = _rideRepo.watchRide(id).listen((ride) {
       if (!mounted) return;
-
-      final previousStatus = _activeRide?.status;
+      final prev = _activeRide?.status;
       setState(() => _activeRide = ride);
+      unawaited(_updateRoute(ride));
 
-      // FIX: _updateDirectionsForRide now guards against re-fetching on every
-      // GPS update — only refetches the route when status actually changes.
-      unawaited(_updateDirectionsForRide(ride));
-
-      // FIX: Only fit camera to customer↔rider when status first transitions
-      // to booked — not on every subsequent GPS update which caused constant
-      // camera jumps and UI refreshes.
       if (ride.status == RideStatus.booked &&
-          ride.status != previousStatus &&
-          _currentLocation != null &&
+          ride.status != prev &&
+          _currentLoc != null &&
           ride.customerLat != null &&
           ride.customerLng != null) {
         unawaited(
-          _fitMapToBounds(
-            _currentLocation!,
+          _fitBounds(
+            _currentLoc!,
             LatLng(ride.customerLat!, ride.customerLng!),
           ),
         );
@@ -515,46 +458,50 @@ class _RiderHomePageState extends State<RiderHomePage>
 
       if (ride.status == RideStatus.completed ||
           ride.status == RideStatus.cancelled) {
-        _rideSubscription?.cancel();
-        _positionSubscription?.cancel();
+        _rideSub?.cancel();
+        _posSub?.cancel();
         _clearPolylines();
         _panelCtrl.reverse();
         setState(() {
           _activeRideId = null;
           _activeRide = null;
           _lastRouteStatus = null;
+          _routeInfo = null;
         });
       }
     });
   }
 
-  void _startRiderLocationUpdates(String rideId) {
-    _positionSubscription?.cancel();
-    _positionSubscription = Geolocator.getPositionStream(
+  void _startLocUpdates(String id) {
+    _posSub?.cancel();
+    _posSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: 10,
       ),
-    ).listen((position) {
-      final latLng = LatLng(position.latitude, position.longitude);
-      _currentLocation = latLng;
-      _rideRepository.updateRiderLocation(
-        rideId: rideId,
-        lat: latLng.latitude,
-        lng: latLng.longitude,
+    ).listen((pos) {
+      final ll = LatLng(pos.latitude, pos.longitude);
+      _currentLoc = ll;
+      _currentHeading = pos.heading.isNaN ? 0 : pos.heading;
+      _rideRepo.updateRiderLocation(
+        rideId: id,
+        lat: ll.latitude,
+        lng: ll.longitude,
       );
-      // FIX: Do NOT call setState here. The Firestore stream will fire when
-      // riderLat/riderLng update on the document, which will call setState
-      // via _startWatchingRide. Calling setState here too caused double
-      // refreshes on every GPS ping.
+      final ride = _activeRide;
+      if (ride != null) _applyProgress(ride);
     });
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Computed helpers
-  // ─────────────────────────────────────────────────────────────────
+  // ── Getters ───────────────────────────────────────────────────────
 
-  bool get _hasActiveRide => _activeRideId != null;
+  bool get _hasRide => _activeRideId != null;
+
+  bool get _showHUD =>
+      _routeInfo != null &&
+      _activeRide != null &&
+      (_activeRide!.status == RideStatus.booked ||
+          _activeRide!.status == RideStatus.inProgress);
 
   String get _statusLabel => switch (_activeRide?.status) {
     RideStatus.booked => 'Navigate to pickup',
@@ -564,9 +511,8 @@ class _RiderHomePageState extends State<RiderHomePage>
     _ => '',
   };
 
-  (Color, IconData) _statusStyle(ThemeData theme) => switch (_activeRide
-      ?.status) {
-    RideStatus.booked => (theme.colorScheme.primary, Icons.navigation_rounded),
+  (Color, IconData) _statusStyle(ThemeData t) => switch (_activeRide?.status) {
+    RideStatus.booked => (t.colorScheme.primary, Icons.navigation_rounded),
     RideStatus.arrived => (
       const Color(0xFF15BA78),
       Icons.where_to_vote_rounded,
@@ -576,22 +522,18 @@ class _RiderHomePageState extends State<RiderHomePage>
       const Color(0xFF15BA78),
       Icons.check_circle_rounded,
     ),
-    _ => (theme.colorScheme.secondary, Icons.info_outline_rounded),
+    _ => (t.colorScheme.secondary, Icons.info_outline_rounded),
   };
 
   bool get _canMarkArrived => _activeRide?.status == RideStatus.booked;
   bool get _canStartRide => _activeRide?.status == RideStatus.arrived;
   bool get _canComplete => _activeRide?.status == RideStatus.inProgress;
 
-  // ─────────────────────────────────────────────────────────────────
-  // Route badge
-  // ─────────────────────────────────────────────────────────────────
+  // ── Route badge ───────────────────────────────────────────────────
 
-  Widget _buildRouteBadge(ThemeData theme) {
-    if (_routeState == _RouteState.idle || _routeState == _RouteState.success) {
+  Widget _routeBadge(ThemeData theme) {
+    if (_routeState == _RouteState.idle || _routeState == _RouteState.success)
       return const SizedBox.shrink();
-    }
-
     final (icon, color, label) = switch (_routeState) {
       _RouteState.loading => (
         Icons.route_outlined,
@@ -625,10 +567,9 @@ class _RiderHomePageState extends State<RiderHomePage>
       ),
       _ => (Icons.info_outline, theme.colorScheme.secondary, ''),
     };
-
     return GestureDetector(
       onTap:
-          _routeErrorDetail == null
+          _routeError == null
               ? null
               : () => showModalBottomSheet<void>(
                 context: context,
@@ -653,10 +594,7 @@ class _RiderHomePageState extends State<RiderHomePage>
                             ],
                           ),
                           const SizedBox(height: 14),
-                          Text(
-                            _routeErrorDetail!,
-                            style: theme.textTheme.bodyMedium,
-                          ),
+                          Text(_routeError!, style: theme.textTheme.bodyMedium),
                         ],
                       ),
                     ),
@@ -681,7 +619,7 @@ class _RiderHomePageState extends State<RiderHomePage>
                 fontWeight: FontWeight.w600,
               ),
             ),
-            if (_routeErrorDetail != null) ...[
+            if (_routeError != null) ...[
               const SizedBox(width: 4),
               Icon(Icons.info_outline, size: 12, color: color.withOpacity(0.7)),
             ],
@@ -691,17 +629,26 @@ class _RiderHomePageState extends State<RiderHomePage>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Build
-  // ─────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final mapCenter = _currentLocation ?? _fallbackLocation;
-    final customerLat = _activeRide?.customerLat ?? _activeRide?.pickupLat;
-    final customerLng = _activeRide?.customerLng ?? _activeRide?.pickupLng;
+    final center = _currentLoc ?? _fallback;
+    final ride = _activeRide;
+    final showDropoff = ride?.status == RideStatus.inProgress;
+    final custLat =
+        showDropoff
+            ? (ride?.dropoffLat ?? ride?.customerLat ?? ride?.pickupLat)
+            : (ride?.customerLat ?? ride?.pickupLat);
+    final custLng =
+        showDropoff
+            ? (ride?.dropoffLng ?? ride?.customerLng ?? ride?.pickupLng)
+            : (ride?.customerLng ?? ride?.pickupLng);
+    final custTitle = showDropoff ? 'Dropoff' : 'Customer';
+    final hidePickupMarker = _showHUD && ride?.status == RideStatus.booked;
+    final showHeadingMarker = _showHUD && _currentLoc != null;
     final (statusColor, statusIcon) = _statusStyle(theme);
 
     return Scaffold(
@@ -715,7 +662,7 @@ class _RiderHomePageState extends State<RiderHomePage>
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color:
-                    _hasActiveRide
+                    _hasRide
                         ? const Color(0xFF15BA78)
                         : (isDark
                             ? const Color(0xFF8B93A7)
@@ -729,7 +676,7 @@ class _RiderHomePageState extends State<RiderHomePage>
         centerTitle: true,
         actions: [
           IconButton(
-            onPressed: _authRepository.signOut,
+            onPressed: _authRepo.signOut,
             icon: const Icon(Icons.logout_rounded, size: 20),
             tooltip: 'Sign out',
           ),
@@ -738,59 +685,88 @@ class _RiderHomePageState extends State<RiderHomePage>
       body: SafeArea(
         child: Column(
           children: [
-            // ── Map ─────────────────────────────────────────────
+            // ── Map with HUD overlay ─────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(20),
                 child: SizedBox(
-                  height: 220,
-                  child: GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: mapCenter,
-                      zoom: 14,
-                    ),
-                    gestureRecognizers: {
-                      Factory<OneSequenceGestureRecognizer>(
-                        () => EagerGestureRecognizer(),
-                      ),
-                    },
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                      if (_currentLocation != null) {
-                        _moveCamera(_currentLocation!);
-                      }
-                    },
-                    myLocationEnabled: _currentLocation != null,
-                    myLocationButtonEnabled: true,
-                    zoomControlsEnabled: false,
-                    polylines: _polylines,
-                    markers: {
-                      Marker(
-                        markerId: const MarkerId('rider'),
-                        position: mapCenter,
-                        infoWindow: const InfoWindow(title: 'You'),
-                        icon: BitmapDescriptor.defaultMarkerWithHue(
-                          BitmapDescriptor.hueGreen,
-                        ),
-                      ),
-                      if (customerLat != null && customerLng != null)
-                        Marker(
-                          markerId: const MarkerId('customer'),
-                          position: LatLng(customerLat, customerLng),
-                          infoWindow: const InfoWindow(title: 'Customer'),
-                          icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueAzure,
+                  height: 240,
+                  child: Stack(
+                    children: [
+                      // Google Map
+                      Positioned.fill(
+                        child: GoogleMap(
+                          initialCameraPosition: CameraPosition(
+                            target: center,
+                            zoom: 14,
                           ),
+                          gestureRecognizers: {
+                            Factory<OneSequenceGestureRecognizer>(
+                              () => EagerGestureRecognizer(),
+                            ),
+                          },
+                          onMapCreated: (c) {
+                            _mapCtrl = c;
+                            if (_currentLoc != null) _moveCamera(_currentLoc!);
+                          },
+                          myLocationEnabled: _currentLoc != null,
+                          myLocationButtonEnabled: true,
+                          zoomControlsEnabled: false,
+                          polylines: _polylines,
+                          markers: {
+                            if (showHeadingMarker)
+                              Marker(
+                                markerId: const MarkerId('heading'),
+                                position: _currentLoc!,
+                                infoWindow: const InfoWindow(title: 'Heading'),
+                                rotation: _currentHeading,
+                                flat: true,
+                                anchor: const Offset(0.5, 0.5),
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueAzure,
+                                ),
+                              )
+                            else
+                              Marker(
+                                markerId: const MarkerId('rider'),
+                                position: center,
+                                infoWindow: const InfoWindow(title: 'You'),
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueGreen,
+                                ),
+                              ),
+                            if (!hidePickupMarker &&
+                                custLat != null &&
+                                custLng != null)
+                              Marker(
+                                markerId: const MarkerId('customer'),
+                                position: LatLng(custLat, custLng),
+                                infoWindow: InfoWindow(title: custTitle),
+                                icon: BitmapDescriptor.defaultMarkerWithHue(
+                                  BitmapDescriptor.hueAzure,
+                                ),
+                              ),
+                          },
                         ),
-                    },
+                      ),
+
+                      // Navigation HUD — sits directly on the map
+                      if (_showHUD)
+                        NavigationHUD(
+                          steps: _routeInfo!.steps,
+                          currentPos: _currentLoc ?? center,
+                          totalDistM: _routeInfo!.totalDistanceM,
+                          etaSeconds: _routeInfo!.totalDurationSec,
+                          rideStatus: _activeRide!.status,
+                        ),
+                    ],
                   ),
                 ),
               ),
             ),
 
-            // ── Progress indicators ──────────────────────────────
-            if (_loadingLocation)
+            if (_loadingLoc)
               const Padding(
                 padding: EdgeInsets.only(top: 4),
                 child: LinearProgressIndicator(minHeight: 2),
@@ -804,25 +780,23 @@ class _RiderHomePageState extends State<RiderHomePage>
                 ),
               ),
 
-            // ── Route badge ──────────────────────────────────────
-            if (_hasActiveRide)
+            if (_hasRide)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: _buildRouteBadge(theme),
+                  child: _routeBadge(theme),
                 ),
               ),
 
             const SizedBox(height: 6),
 
-            // ── Content ──────────────────────────────────────────
             Expanded(
               child:
-                  _hasActiveRide
+                  _hasRide
                       ? SlideTransition(
                         position: _panelSlide,
-                        child: _buildActiveRidePanel(
+                        child: _buildActivePanel(
                           theme,
                           isDark,
                           statusColor,
@@ -837,11 +811,9 @@ class _RiderHomePageState extends State<RiderHomePage>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Active ride panel
-  // ─────────────────────────────────────────────────────────────────
+  // ── Active ride panel ─────────────────────────────────────────────
 
-  Widget _buildActiveRidePanel(
+  Widget _buildActivePanel(
     ThemeData theme,
     bool isDark,
     Color statusColor,
@@ -962,7 +934,6 @@ class _RiderHomePageState extends State<RiderHomePage>
           ),
           const SizedBox(height: 16),
 
-          // Ride detail rows
           if (_activeRide != null) ...[
             _InfoRow(
               icon: Icons.my_location_rounded,
@@ -980,7 +951,6 @@ class _RiderHomePageState extends State<RiderHomePage>
             const SizedBox(height: 16),
           ],
 
-          // Messages header
           Row(
             children: [
               Icon(
@@ -995,7 +965,6 @@ class _RiderHomePageState extends State<RiderHomePage>
           ),
           const SizedBox(height: 8),
 
-          // Message list
           Container(
             height: 160,
             decoration: BoxDecoration(
@@ -1010,26 +979,25 @@ class _RiderHomePageState extends State<RiderHomePage>
             child: ClipRRect(
               borderRadius: BorderRadius.circular(13),
               child: StreamBuilder<List<RideMessage>>(
-                stream: _rideRepository.watchMessages(_activeRideId!),
-                builder: (context, snapshot) {
-                  final messages = snapshot.data ?? [];
-                  if (messages.isEmpty) {
+                stream: _rideRepo.watchMessages(_activeRideId!),
+                builder: (ctx, snap) {
+                  final msgs = snap.data ?? [];
+                  if (msgs.isEmpty)
                     return Center(
                       child: Text(
                         'No messages yet.',
                         style: theme.textTheme.bodyMedium,
                       ),
                     );
-                  }
                   return ListView.builder(
                     reverse: true,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 12,
                       vertical: 8,
                     ),
-                    itemCount: messages.length,
-                    itemBuilder: (context, index) {
-                      final msg = messages[index];
+                    itemCount: msgs.length,
+                    itemBuilder: (_, i) {
+                      final msg = msgs[i];
                       final isRider = msg.senderRole == 'rider';
                       return Align(
                         alignment:
@@ -1043,7 +1011,7 @@ class _RiderHomePageState extends State<RiderHomePage>
                             vertical: 8,
                           ),
                           constraints: BoxConstraints(
-                            maxWidth: MediaQuery.of(context).size.width * 0.65,
+                            maxWidth: MediaQuery.of(ctx).size.width * 0.65,
                           ),
                           decoration: BoxDecoration(
                             color:
@@ -1072,7 +1040,6 @@ class _RiderHomePageState extends State<RiderHomePage>
           ),
           const SizedBox(height: 10),
 
-          // Message input
           Container(
             decoration: BoxDecoration(
               color: isDark ? const Color(0xFF1E2235) : Colors.white,
@@ -1087,7 +1054,7 @@ class _RiderHomePageState extends State<RiderHomePage>
               children: [
                 Expanded(
                   child: TextField(
-                    controller: _messageController,
+                    controller: _messageCtrl,
                     decoration: InputDecoration(
                       hintText: 'Message customer…',
                       border: InputBorder.none,
@@ -1135,15 +1102,13 @@ class _RiderHomePageState extends State<RiderHomePage>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // Ride request list
-  // ─────────────────────────────────────────────────────────────────
+  // ── Ride request list ─────────────────────────────────────────────
 
   Widget _buildRideList(ThemeData theme, bool isDark) {
     return StreamBuilder<List<RideRequest>>(
-      stream: _rideRepository.watchRequestedRides(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+      stream: _rideRepo.watchRequestedRides(),
+      builder: (ctx, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
           return Center(
             child: CircularProgressIndicator(
               color: theme.colorScheme.primary,
@@ -1151,8 +1116,7 @@ class _RiderHomePageState extends State<RiderHomePage>
             ),
           );
         }
-
-        if (snapshot.hasError) {
+        if (snap.hasError) {
           return Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1174,11 +1138,9 @@ class _RiderHomePageState extends State<RiderHomePage>
             ),
           );
         }
-
-        final rides = (snapshot.data ?? [])
+        final rides = (snap.data ?? [])
             .where(_withinRadius)
             .toList(growable: false);
-
         if (rides.isEmpty) {
           return Center(
             child: Column(
@@ -1214,21 +1176,18 @@ class _RiderHomePageState extends State<RiderHomePage>
             ),
           );
         }
-
         return ListView.separated(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           itemCount: rides.length,
           separatorBuilder: (_, __) => const SizedBox(height: 12),
-          itemBuilder: (context, index) {
-            final ride = rides[index];
-            return _RideRequestCard(
-              ride: ride,
-              distanceKm: _distanceToRideKm(ride),
-              onAccept: () => _acceptRide(ride.id),
-              isDark: isDark,
-              theme: theme,
-            );
-          },
+          itemBuilder:
+              (_, i) => _RideRequestCard(
+                ride: rides[i],
+                distanceKm: _distToRideKm(rides[i]),
+                onAccept: () => _acceptRide(rides[i].id),
+                isDark: isDark,
+                theme: theme,
+              ),
         );
       },
     );
@@ -1236,7 +1195,7 @@ class _RiderHomePageState extends State<RiderHomePage>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets (unchanged)
+// Sub-widgets (unchanged from original)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ActionButton extends StatelessWidget {
@@ -1247,7 +1206,6 @@ class _ActionButton extends StatelessWidget {
     required this.color,
     required this.onTap,
   });
-
   final String label;
   final IconData icon;
   final bool enabled;
@@ -1319,7 +1277,6 @@ class _InfoRow extends StatelessWidget {
     required this.label,
     required this.value,
   });
-
   final IconData icon;
   final Color color;
   final String label;
@@ -1380,7 +1337,6 @@ class _RideRequestCard extends StatefulWidget {
     required this.isDark,
     required this.theme,
   });
-
   final RideRequest ride;
   final double? distanceKm;
   final VoidCallback onAccept;
@@ -1430,23 +1386,23 @@ class _RideRequestCardState extends State<_RideRequestCard>
   @override
   Widget build(BuildContext context) {
     final accent = _accent;
-    final isDark = widget.isDark;
-    final theme = widget.theme;
     final ride = widget.ride;
-
     return ScaleTransition(
       scale: _scale,
       child: Container(
         decoration: BoxDecoration(
-          color: isDark ? const Color(0xFF181C26) : Colors.white,
+          color: widget.isDark ? const Color(0xFF181C26) : Colors.white,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-            color: isDark ? const Color(0xFF252A3A) : const Color(0xFFE5E9F5),
+            color:
+                widget.isDark
+                    ? const Color(0xFF252A3A)
+                    : const Color(0xFFE5E9F5),
             width: 1.5,
           ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(isDark ? 0.2 : 0.05),
+              color: Colors.black.withOpacity(widget.isDark ? 0.2 : 0.05),
               blurRadius: 12,
               offset: const Offset(0, 3),
             ),
@@ -1474,7 +1430,7 @@ class _RideRequestCardState extends State<_RideRequestCard>
                     children: [
                       Text(
                         '${ride.vehicleType.label} ride',
-                        style: theme.textTheme.titleMedium?.copyWith(
+                        style: widget.theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -1484,16 +1440,14 @@ class _RideRequestCardState extends State<_RideRequestCard>
                             Icons.straighten_rounded,
                             size: 12,
                             color:
-                                isDark
+                                widget.isDark
                                     ? const Color(0xFF8B93A7)
                                     : const Color(0xFF9CA3AF),
                           ),
                           const SizedBox(width: 3),
                           Text(
-                            '${ride.distanceKm.toStringAsFixed(1)} km trip'
-                            '  ·  '
-                            '${widget.distanceKm?.toStringAsFixed(1) ?? '--'} km away',
-                            style: theme.textTheme.bodySmall,
+                            '${ride.distanceKm.toStringAsFixed(1)} km trip  ·  ${widget.distanceKm?.toStringAsFixed(1) ?? '--'} km away',
+                            style: widget.theme.textTheme.bodySmall,
                           ),
                         ],
                       ),
@@ -1505,7 +1459,7 @@ class _RideRequestCardState extends State<_RideRequestCard>
                   children: [
                     Text(
                       '\$${ride.estimatedFare.toStringAsFixed(2)}',
-                      style: theme.textTheme.titleMedium?.copyWith(
+                      style: widget.theme.textTheme.titleMedium?.copyWith(
                         color: accent,
                         fontWeight: FontWeight.w700,
                         fontSize: 17,
@@ -1516,7 +1470,7 @@ class _RideRequestCardState extends State<_RideRequestCard>
                       style: TextStyle(
                         fontSize: 10,
                         color:
-                            isDark
+                            widget.isDark
                                 ? const Color(0xFF8B93A7)
                                 : const Color(0xFF9CA3AF),
                       ),
@@ -1526,15 +1480,13 @@ class _RideRequestCardState extends State<_RideRequestCard>
               ],
             ),
             const SizedBox(height: 14),
-
             _RoutePreview(
               pickup: ride.pickup,
               dropoff: ride.dropoff,
-              isDark: isDark,
-              theme: theme,
+              isDark: widget.isDark,
+              theme: widget.theme,
             ),
             const SizedBox(height: 14),
-
             GestureDetector(
               onTapDown: (_) => _ctrl.reverse(),
               onTapUp: (_) {
@@ -1587,7 +1539,6 @@ class _RoutePreview extends StatelessWidget {
     required this.isDark,
     required this.theme,
   });
-
   final String pickup;
   final String dropoff;
   final bool isDark;
@@ -1595,8 +1546,7 @@ class _RoutePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final lineColor =
-        isDark ? const Color(0xFF252A3A) : const Color(0xFFE5E9F5);
+    final line = isDark ? const Color(0xFF252A3A) : const Color(0xFFE5E9F5);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1610,7 +1560,7 @@ class _RoutePreview extends StatelessWidget {
                 shape: BoxShape.circle,
               ),
             ),
-            Container(width: 1.5, height: 26, color: lineColor),
+            Container(width: 1.5, height: 26, color: line),
             Container(
               width: 9,
               height: 9,

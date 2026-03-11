@@ -46,6 +46,8 @@ class RideRepository {
   Future<void> acceptRide({
     required String rideId,
     required String riderId,
+    double? riderLat,
+    double? riderLng,
   }) async {
     await _firestore.runTransaction((transaction) async {
       final ref = _rides.doc(rideId);
@@ -58,11 +60,17 @@ class RideRepository {
       if (status != RideStatus.requested.name) {
         throw StateError('Ride already booked');
       }
-      transaction.update(ref, {
+      final update = <String, dynamic>{
         'status': RideStatus.booked.name,
         'riderId': riderId,
         'bookedAt': FieldValue.serverTimestamp(),
-      });
+      };
+      if (riderLat != null && riderLng != null) {
+        update['riderLat'] = riderLat;
+        update['riderLng'] = riderLng;
+        update['riderLocationUpdatedAt'] = FieldValue.serverTimestamp();
+      }
+      transaction.update(ref, update);
     });
   }
 
