@@ -407,15 +407,14 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         _lastRouteStatus = ride.status;
       });
       _applyProgress(ride);
-        if (ride.status != RideStatus.inProgress) {
-          unawaited(_fitBounds(origin, dest));
-        }
+      if (ride.status != RideStatus.inProgress) {
+        unawaited(_fitBounds(origin, dest));
+      }
 
-        // FIX #12: Speak first instruction (in-progress only)
-        if (info.steps.isNotEmpty &&
-            ride.status == RideStatus.inProgress) {
-          _speakInstruction(info.steps.first.instruction);
-        }
+      // FIX #12: Speak first instruction (in-progress only)
+      if (info.steps.isNotEmpty && ride.status == RideStatus.inProgress) {
+        _speakInstruction(info.steps.first.instruction);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -686,11 +685,11 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           lng: ll.longitude,
         );
 
-        // FIX #2 + #7: Move camera with tilt and bearing during navigation
-        if (_activeRide?.status == RideStatus.inProgress) {
-          unawaited(_moveCameraNav(ll, heading, zoom: 19.2));
-          _checkVoicePrompt(ll); // FIX #12
-        }
+      // FIX #2 + #7: Move camera with tilt and bearing during navigation
+      if (_activeRide?.status == RideStatus.inProgress) {
+        unawaited(_moveCameraNav(ll, heading, zoom: 19.2));
+        _checkVoicePrompt(ll); // FIX #12
+      }
 
       final ride = _activeRide;
       if (ride != null) _applyProgress(ride);
@@ -822,10 +821,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   bool get _hasRide => _activeRideId != null;
 
-    bool get _showHUD =>
-        _routeInfo != null &&
-        _activeRide != null &&
-        _activeRide!.status == RideStatus.inProgress;
+  bool get _showHUD =>
+      _routeInfo != null &&
+      _activeRide != null &&
+      _activeRide!.status == RideStatus.inProgress;
 
   String get _statusLabel => switch (_activeRide?.status) {
     RideStatus.requested =>
@@ -1021,8 +1020,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                                   Marker(
                                     markerId: const MarkerId('heading'),
                                     position: _currentLoc!,
-                                    infoWindow:
-                                        const InfoWindow(title: 'Heading'),
+                                    infoWindow: const InfoWindow(
+                                      title: 'Heading',
+                                    ),
                                     rotation: _currentHeading,
                                     flat: true,
                                     anchor: const Offset(0.5, 0.5),
@@ -1036,19 +1036,20 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                                   Marker(
                                     markerId: const MarkerId('pickup'),
                                     position: center,
-                                    infoWindow:
-                                        const InfoWindow(title: 'Pickup'),
+                                    infoWindow: const InfoWindow(
+                                      title: 'Pickup',
+                                    ),
                                   ),
                                 if (_dropoffLatLng != null)
                                   Marker(
                                     markerId: const MarkerId('dropoff'),
                                     position: _dropoffLatLng!,
-                                    infoWindow:
-                                        const InfoWindow(title: 'Dropoff'),
-                                    icon:
-                                        BitmapDescriptor.defaultMarkerWithHue(
-                                          BitmapDescriptor.hueAzure,
-                                        ),
+                                    infoWindow: const InfoWindow(
+                                      title: 'Dropoff',
+                                    ),
+                                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                                      BitmapDescriptor.hueAzure,
+                                    ),
                                   ),
                                 if (showRider &&
                                     riderLat != null &&
@@ -1056,12 +1057,12 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                                   Marker(
                                     markerId: const MarkerId('rider'),
                                     position: LatLng(riderLat, riderLng),
-                                    infoWindow:
-                                        const InfoWindow(title: 'Driver'),
-                                    icon:
-                                        BitmapDescriptor.defaultMarkerWithHue(
-                                          BitmapDescriptor.hueGreen,
-                                        ),
+                                    infoWindow: const InfoWindow(
+                                      title: 'Driver',
+                                    ),
+                                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                                      BitmapDescriptor.hueGreen,
+                                    ),
                                   ),
                               },
                             ),
@@ -1081,87 +1082,18 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                     ),
                   ),
                 ),
-                DraggableScrollableSheet(
-                  initialChildSize: 0.3,
-                  minChildSize: 0.2,
-                  maxChildSize: 0.85,
-                  builder: (context, scrollController) {
-                    return Container(
-                      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      decoration: BoxDecoration(
-                        color: theme.scaffoldBackgroundColor,
-                        borderRadius: BorderRadius.circular(20),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.12),
-                            blurRadius: 16,
-                            offset: const Offset(0, -4),
-                          ),
-                        ],
-                      ),
-                      child: SingleChildScrollView(
-                        controller: scrollController,
-                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                        child: _buildBottomPanelContent(theme),
-                      ),
-                    );
-                  },
+                DraggableGrowingSheet(
+                  minHeight: 200,
+                  maxHeight: MediaQuery.of(context).size.height * 0.65,
+                  child: _buildBottomPanelContent(Theme.of(context)),
                 ),
               ],
             );
           },
         ),
       ),
-      bottomNavigationBar: SafeArea(
-        minimum: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child:
-            _hasRide
-                ? FilledButton.icon(
-                  onPressed:
-                      (_isCancelling ||
-                              _activeRide?.status == RideStatus.inProgress)
-                          ? null
-                          : _cancelRide,
-                  icon:
-                      _isCancelling
-                          ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                          : const Icon(Icons.cancel_outlined),
-                  label: Text(_isCancelling ? 'Cancelling...' : 'Cancel Ride'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: theme.colorScheme.error,
-                    minimumSize: const Size.fromHeight(54),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                )
-                : FilledButton.icon(
-                  onPressed:
-                      (_isRequesting || _loadingLoc) ? null : _requestRide,
-                  icon: const Icon(Icons.local_taxi),
-                  label: Text(
-                    _isRequesting
-                        ? 'Requesting...'
-                        : 'Request ${_vehicle.label}',
-                  ),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(54),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                ),
-      ),
     );
   }
-
 
   Widget _buildBottomPanelContent(ThemeData theme) {
     return Column(
@@ -1296,19 +1228,117 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
               Expanded(
                 child: TextField(
                   controller: _messageCtrl,
-                  decoration: const InputDecoration(
-                    hintText: 'Message driver',
-                  ),
+                  decoration: const InputDecoration(hintText: 'Message driver'),
                 ),
               ),
-              IconButton(
-                onPressed: _sendMessage,
-                icon: const Icon(Icons.send),
-              ),
+              IconButton(onPressed: _sendMessage, icon: const Icon(Icons.send)),
             ],
           ),
         ],
+
+        const SizedBox(height: 12),
+
+        _hasRide
+            ? FilledButton.icon(
+              onPressed:
+                  (_isCancelling ||
+                          _activeRide?.status == RideStatus.inProgress)
+                      ? null
+                      : _cancelRide,
+              icon:
+                  _isCancelling
+                      ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                      : const Icon(Icons.cancel_outlined),
+              label: Text(_isCancelling ? 'Cancelling...' : 'Cancel Ride'),
+              style: FilledButton.styleFrom(
+                backgroundColor: theme.colorScheme.error,
+                minimumSize: const Size.fromHeight(54),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            )
+            : FilledButton.icon(
+              onPressed: (_isRequesting || _loadingLoc) ? null : _requestRide,
+              icon: const Icon(Icons.local_taxi),
+              label: Text(
+                _isRequesting ? 'Requesting...' : 'Request ${_vehicle.label}',
+              ),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(54),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+              ),
+            ),
       ],
+    );
+  }
+}
+
+class DraggableGrowingSheet extends StatefulWidget {
+  final Widget child;
+  final double minHeight;
+  final double maxHeight;
+
+  const DraggableGrowingSheet({
+    super.key,
+    required this.child,
+    this.minHeight = 100,
+    this.maxHeight = 600,
+  });
+
+  @override
+  State<DraggableGrowingSheet> createState() => _DraggableGrowingSheetState();
+}
+
+class _DraggableGrowingSheetState extends State<DraggableGrowingSheet> {
+  double sheetHeight = 200; // initial height
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: 16,
+      right: 16,
+      bottom: 16,
+      child: GestureDetector(
+        onVerticalDragUpdate: (details) {
+          setState(() {
+            sheetHeight -= details.delta.dy; // drag up → increase height
+            sheetHeight = sheetHeight.clamp(widget.minHeight, widget.maxHeight);
+          });
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 100),
+          height: sheetHeight,
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.12),
+                blurRadius: 16,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: SingleChildScrollView(
+            physics:
+                sheetHeight >= widget.maxHeight
+                    ? const ClampingScrollPhysics()
+                    : const NeverScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            child: widget.child,
+          ),
+        ),
+      ),
     );
   }
 }
