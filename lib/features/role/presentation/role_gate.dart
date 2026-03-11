@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../../shared/presentation/loading_screen.dart';
 import '../../auth/presentation/auth_landing_page.dart';
+import '../../onboarding/presentation/customer_onboarding_page.dart';
+import '../../onboarding/presentation/rider_onboarding_page.dart';
 import '../../rides/presentation/customer_home_page.dart';
 import '../../rides/presentation/rider_home_page.dart';
 import '../domain/user_role.dart';
@@ -30,9 +32,16 @@ class RoleGate extends StatelessWidget {
 
         final data = snapshot.data?.data();
         final role = UserRoleX.fromString(data?['role'] as String?);
+        final onboardingDone = data?['onboardingCompleted'] == true;
 
         if (role == null) {
           return const RoleSelectionPage();
+        }
+
+        if (!onboardingDone) {
+          return role == UserRole.customer
+              ? const CustomerOnboardingPage()
+              : const RiderOnboardingPage();
         }
 
         return role == UserRole.customer

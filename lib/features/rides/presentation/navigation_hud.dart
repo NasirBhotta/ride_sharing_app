@@ -22,21 +22,18 @@ class NavStep {
     required this.distanceM,
     required this.maneuver,
     required this.polylinePoints,
+    this.startLocation, // FIX #9: step start location for accurate detection
   });
 
   final String instruction;
   final double distanceM;
   final ManeuverType maneuver;
   final List<LatLng> polylinePoints;
+  final LatLng? startLocation; // FIX #9
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NavigationHUD
-//
-// Place inside a Stack on top of a GoogleMap.
-// Renders a compact green top banner (current instruction) and a slim
-// coloured bottom bar (ETA + remaining distance + arrival time).
-// No full-screen mode — it lives inside whatever height the map has.
 // ─────────────────────────────────────────────────────────────────────────────
 
 class NavigationHUD extends StatefulWidget {
@@ -99,18 +96,33 @@ class _NavigationHUDState extends State<NavigationHUD>
 
   void _recalc() {
     if (widget.steps.isEmpty) return;
+
+    // FIX #9: Use startLocation for more accurate step detection
     double best = double.infinity;
     int bestIdx = _stepIndex;
     final limit = (_stepIndex + 4).clamp(0, widget.steps.length);
+
     for (var i = _stepIndex; i < limit; i++) {
-      for (final p in widget.steps[i].polylinePoints) {
-        final d = _distM(widget.currentPos, p);
+      final step = widget.steps[i];
+
+      // Prefer startLocation if available
+      if (step.startLocation != null) {
+        final d = _distM(widget.currentPos, step.startLocation!);
         if (d < best) {
           best = d;
           bestIdx = i;
         }
+      } else {
+        for (final p in step.polylinePoints) {
+          final d = _distM(widget.currentPos, p);
+          if (d < best) {
+            best = d;
+            bestIdx = i;
+          }
+        }
       }
     }
+
     double rem = 0;
     for (var i = bestIdx; i < widget.steps.length; i++) {
       rem += widget.steps[i].distanceM;
@@ -197,7 +209,6 @@ class _NavigationHUDState extends State<NavigationHUD>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Current step
                 Container(
                   color: topBg,
                   padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
@@ -247,7 +258,6 @@ class _NavigationHUDState extends State<NavigationHUD>
                     ],
                   ),
                 ),
-                // Next step "then" row
                 if (_next != null)
                   Container(
                     color: topBgDark,

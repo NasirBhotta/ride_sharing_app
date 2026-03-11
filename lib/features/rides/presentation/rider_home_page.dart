@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart'; // FIX #12: voice navigation
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -41,12 +44,20 @@ class _RiderHomePageState extends State<RiderHomePage>
   final _authRepo = AuthRepository();
   final _messageCtrl = TextEditingController();
 
+  // FIX #12: TTS for voice navigation
+  final FlutterTts _tts = FlutterTts();
+  String? _lastSpokenInstruction;
+  BitmapDescriptor? _headingIcon;
+
   GoogleMapController? _mapCtrl;
   LatLng? _currentLoc;
   double _currentHeading = 0;
   bool _loadingLoc = true;
   Set<Polyline> _polylines = {};
   List<LatLng> _routePoints = [];
+
+  // FIX #3: track closest polyline index to avoid full scan
+  int _closestPolylineIndex = 0;
 
   _RouteState _routeState = _RouteState.idle;
   String? _routeError;
@@ -78,6 +89,46 @@ class _RiderHomePageState extends State<RiderHomePage>
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _panelCtrl, curve: Curves.easeOutCubic));
     _initLocation();
+    _initTts();
+    _loadHeadingIcon();
+  }
+
+  Future<void> _initTts() async {
+    await _tts.setLanguage('en-US');
+    await _tts.setSpeechRate(0.5);
+    await _tts.setVolume(1.0);
+  }
+
+  Future<void> _loadHeadingIcon() async {
+    final icon = await _buildHeadingIcon();
+    if (!mounted) return;
+    setState(() => _headingIcon = icon);
+  }
+
+  Future<BitmapDescriptor> _buildHeadingIcon() async {
+    const size = 96.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final fill = Paint()..color = const Color(0xFF1A6BFF);
+    final stroke =
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 6;
+    final path =
+        Path()
+          ..moveTo(size / 2, 6)
+          ..lineTo(size - 8, size - 10)
+          ..lineTo(size / 2, size - 28)
+          ..lineTo(8, size - 10)
+          ..close();
+    canvas.drawShadow(path, Colors.black54, 4, false);
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(size.toInt(), size.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
 
   @override
@@ -87,6 +138,7 @@ class _RiderHomePageState extends State<RiderHomePage>
     _rideSub?.cancel();
     _posSub?.cancel();
     _panelCtrl.dispose();
+    _tts.stop();
     super.dispose();
   }
 
@@ -126,14 +178,26 @@ class _RiderHomePageState extends State<RiderHomePage>
   Future<bool> _ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) return false;
     var p = await Geolocator.checkPermission();
-    if (p == LocationPermission.denied)
+    if (p == LocationPermission.denied) {
       p = await Geolocator.requestPermission();
+    }
     return p != LocationPermission.denied &&
         p != LocationPermission.deniedForever;
   }
 
   Future<void> _moveCamera(LatLng t) async =>
       _mapCtrl?.animateCamera(CameraUpdate.newLatLngZoom(t, 15));
+
+  // FIX #2 + #7: Navigation camera tracks position with tilt and bearing
+  Future<void> _moveCameraNav(
+    LatLng t,
+    double heading, {
+    double zoom = 18.2,
+  }) async => _mapCtrl?.animateCamera(
+    CameraUpdate.newCameraPosition(
+      CameraPosition(target: t, zoom: zoom, tilt: 55, bearing: heading),
+    ),
+  );
 
   Future<void> _fitBounds(LatLng a, LatLng b) async {
     final bounds = LatLngBounds(
@@ -153,7 +217,7 @@ class _RiderHomePageState extends State<RiderHomePage>
 
   Future<void> _updateRoute(RideRequest ride, {bool force = false}) async {
     if (ride.status != _lastRouteStatus || force) {
-      // proceed
+      // proceed with re-fetch
     } else {
       if (mounted) setState(() {});
       return;
@@ -216,11 +280,14 @@ class _RiderHomePageState extends State<RiderHomePage>
     if (mounted) setState(() => _routeState = _RouteState.loading);
 
     try {
+      // FIX #5: Add departure_time for accurate ETA
       final uri =
           Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
             'origin': '${origin.latitude},${origin.longitude}',
             'destination': '${dest.latitude},${dest.longitude}',
             'mode': 'driving',
+            'departure_time': 'now',
+            'alternatives': 'false',
             'key': MapsConfig.directionsApiKey,
           });
       final res = await http.get(uri).timeout(const Duration(seconds: 15));
@@ -249,15 +316,25 @@ class _RiderHomePageState extends State<RiderHomePage>
       final pts = info.steps
           .expand((s) => s.polylinePoints)
           .toList(growable: false);
+
       setState(() {
         _routeInfo = info;
         _routePoints = pts;
+        _closestPolylineIndex = 0; // FIX #3: reset on new route
         _routeState = _RouteState.success;
         _routeError = null;
         _lastRouteStatus = ride.status;
       });
       _applyProgress(ride);
-      unawaited(_fitBounds(origin, dest));
+      if (ride.status != RideStatus.inProgress &&
+          ride.status != RideStatus.booked) {
+        unawaited(_fitBounds(origin, dest));
+      }
+
+      // FIX #12: Speak first instruction
+      if (info.steps.isNotEmpty) {
+        _speakInstruction(info.steps.first.instruction);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -280,6 +357,7 @@ class _RiderHomePageState extends State<RiderHomePage>
           _routeError = null;
           _routePoints = [];
           _routeInfo = null;
+          _closestPolylineIndex = 0; // FIX #3
         });
     }
   }
@@ -310,19 +388,53 @@ class _RiderHomePageState extends State<RiderHomePage>
       return;
     }
 
-    var ci = 0;
+    // FIX #3: Windowed search starting from last known index
+    final searchStart = _closestPolylineIndex;
+    final searchEnd = min(searchStart + 30, _routePoints.length);
+
+    var ci = searchStart;
     var cd = double.infinity;
-    for (var i = 0; i < _routePoints.length; i++) {
+
+    // Search the window first
+    for (var i = searchStart; i < searchEnd; i++) {
       final d = _haversineKm(cur, _routePoints[i]);
       if (d < cd) {
         cd = d;
         ci = i;
       }
     }
+
+    // If not found in window, fall back to full scan once
+    if (ci == searchStart && searchStart > 0) {
+      for (var i = 0; i < _routePoints.length; i++) {
+        final d = _haversineKm(cur, _routePoints[i]);
+        if (d < cd) {
+          cd = d;
+          ci = i;
+        }
+      }
+    }
+
+    _closestPolylineIndex = ci; // FIX #3: persist for next update
+
+    // FIX #4: Off-route detection — if >40m from nearest point, reroute
+    if (cd * 1000 > 40) {
+      unawaited(_updateRoute(ride, force: true));
+      return;
+    }
+
     if (!mounted) return;
     final theme = Theme.of(context);
+
     setState(() {
+      // FIX #6: Full route in gray + remaining route in primary color
       _polylines = {
+        Polyline(
+          polylineId: const PolylineId('full_route'),
+          color: Colors.grey.shade300,
+          width: 6,
+          points: _routePoints,
+        ),
         Polyline(
           polylineId: const PolylineId('traveled'),
           color: Colors.grey.shade400,
@@ -337,6 +449,29 @@ class _RiderHomePageState extends State<RiderHomePage>
         ),
       };
     });
+  }
+
+  // FIX #12: Voice navigation
+  Future<void> _speakInstruction(String instruction) async {
+    if (instruction == _lastSpokenInstruction) return;
+    _lastSpokenInstruction = instruction;
+    await _tts.speak(instruction);
+  }
+
+  void _checkVoicePrompt(LatLng cur) {
+    final info = _routeInfo;
+    if (info == null || info.steps.isEmpty) return;
+    for (final step in info.steps) {
+      final anchor =
+          step.startLocation ??
+          (step.polylinePoints.isNotEmpty ? step.polylinePoints.first : null);
+      if (anchor == null) continue;
+      final dist = _haversineKm(cur, anchor) * 1000;
+      if (dist < 80) {
+        _speakInstruction(step.instruction);
+        break;
+      }
+    }
   }
 
   // ── Distance helpers ──────────────────────────────────────────────
@@ -481,13 +616,29 @@ class _RiderHomePageState extends State<RiderHomePage>
       ),
     ).listen((pos) {
       final ll = LatLng(pos.latitude, pos.longitude);
-      _currentLoc = ll;
-      _currentHeading = pos.heading.isNaN ? 0 : pos.heading;
+
+      // FIX #1: setState so HUD and map rebuild with new position
+      if (!mounted) return;
+      setState(() {
+        _currentLoc = ll;
+        _currentHeading = pos.heading.isNaN ? 0 : pos.heading;
+      });
+
       _rideRepo.updateRiderLocation(
         rideId: id,
         lat: ll.latitude,
         lng: ll.longitude,
       );
+
+      // FIX #2 + #7: Move camera with tilt and bearing during active navigation
+      final navStatus = _activeRide?.status;
+      if (navStatus == RideStatus.booked ||
+          navStatus == RideStatus.inProgress) {
+        final navZoom = navStatus == RideStatus.inProgress ? 19.2 : 18.2;
+        unawaited(_moveCameraNav(ll, _currentHeading, zoom: navZoom));
+        if (_showHUD) _checkVoicePrompt(ll); // FIX #12
+      }
+
       final ride = _activeRide;
       if (ride != null) _applyProgress(ride);
     });
@@ -647,8 +798,11 @@ class _RiderHomePageState extends State<RiderHomePage>
             ? (ride?.dropoffLng ?? ride?.customerLng ?? ride?.pickupLng)
             : (ride?.customerLng ?? ride?.pickupLng);
     final custTitle = showDropoff ? 'Dropoff' : 'Customer';
-    final hidePickupMarker = _showHUD && ride?.status == RideStatus.booked;
-    final showHeadingMarker = _showHUD && _currentLoc != null;
+    final showHeadingMarker =
+        (_activeRide?.status == RideStatus.booked ||
+            _activeRide?.status == RideStatus.inProgress) &&
+        _currentLoc != null;
+    final showDestinationMarker = ride?.status != RideStatus.booked;
     final (statusColor, statusIcon) = _statusStyle(theme);
 
     return Scaffold(
@@ -701,16 +855,19 @@ class _RiderHomePageState extends State<RiderHomePage>
                             target: center,
                             zoom: 14,
                           ),
-                          gestureRecognizers: {
-                            Factory<OneSequenceGestureRecognizer>(
-                              () => EagerGestureRecognizer(),
-                            ),
-                          },
+                          // FIX #11: Use PanGestureRecognizer instead of EagerGestureRecognizer
+                          gestureRecognizers:
+                              <Factory<OneSequenceGestureRecognizer>>{
+                                Factory<PanGestureRecognizer>(
+                                  () => PanGestureRecognizer(),
+                                ),
+                              },
                           onMapCreated: (c) {
                             _mapCtrl = c;
                             if (_currentLoc != null) _moveCamera(_currentLoc!);
                           },
-                          myLocationEnabled: _currentLoc != null,
+                          myLocationEnabled:
+                              _currentLoc != null && !showHeadingMarker,
                           myLocationButtonEnabled: true,
                           zoomControlsEnabled: false,
                           polylines: _polylines,
@@ -723,9 +880,11 @@ class _RiderHomePageState extends State<RiderHomePage>
                                 rotation: _currentHeading,
                                 flat: true,
                                 anchor: const Offset(0.5, 0.5),
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueAzure,
-                                ),
+                                icon:
+                                    _headingIcon ??
+                                    BitmapDescriptor.defaultMarkerWithHue(
+                                      BitmapDescriptor.hueAzure,
+                                    ),
                               )
                             else
                               Marker(
@@ -736,7 +895,7 @@ class _RiderHomePageState extends State<RiderHomePage>
                                   BitmapDescriptor.hueGreen,
                                 ),
                               ),
-                            if (!hidePickupMarker &&
+                            if (showDestinationMarker &&
                                 custLat != null &&
                                 custLng != null)
                               Marker(
@@ -751,7 +910,7 @@ class _RiderHomePageState extends State<RiderHomePage>
                         ),
                       ),
 
-                      // Navigation HUD — sits directly on the map
+                      // Navigation HUD
                       if (_showHUD)
                         NavigationHUD(
                           steps: _routeInfo!.steps,
@@ -824,7 +983,6 @@ class _RiderHomePageState extends State<RiderHomePage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Status banner
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             padding: const EdgeInsets.all(14),
@@ -898,7 +1056,6 @@ class _RiderHomePageState extends State<RiderHomePage>
           ),
           const SizedBox(height: 14),
 
-          // Action buttons
           Row(
             children: [
               Expanded(
@@ -1195,7 +1352,7 @@ class _RiderHomePageState extends State<RiderHomePage>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sub-widgets (unchanged from original)
+// Sub-widgets
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ActionButton extends StatelessWidget {

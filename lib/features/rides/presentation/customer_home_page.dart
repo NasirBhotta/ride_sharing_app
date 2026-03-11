@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart'; // FIX #12: voice navigation
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -51,15 +54,23 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   final _dropoffCtrl = TextEditingController();
   final _messageCtrl = TextEditingController();
 
+  // FIX #12: TTS for voice navigation
+  final FlutterTts _tts = FlutterTts();
+  String? _lastSpokenInstruction;
+  BitmapDescriptor? _headingIcon;
+
   GoogleMapController? _mapCtrl;
   VehicleType _vehicle = VehicleType.car;
   LatLng? _currentLoc;
+  double _currentHeading = 0;
   LatLng? _dropoffLatLng;
   bool _loadingLoc = true;
   Set<Polyline> _polylines = {};
   List<LatLng> _routePoints = [];
 
-  // navigation
+  // FIX #3: track closest polyline index
+  int _closestPolylineIndex = 0;
+
   RouteInfo? _routeInfo;
 
   _RouteState _routeState = _RouteState.idle;
@@ -82,6 +93,46 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   void initState() {
     super.initState();
     _initLocation();
+    _initTts();
+    _loadHeadingIcon();
+  }
+
+  Future<void> _initTts() async {
+    await _tts.setLanguage('en-US');
+    await _tts.setSpeechRate(0.5);
+    await _tts.setVolume(1.0);
+  }
+
+  Future<void> _loadHeadingIcon() async {
+    final icon = await _buildHeadingIcon();
+    if (!mounted) return;
+    setState(() => _headingIcon = icon);
+  }
+
+  Future<BitmapDescriptor> _buildHeadingIcon() async {
+    const size = 96.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final fill = Paint()..color = const Color(0xFF1A6BFF);
+    final stroke =
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 6;
+    final path =
+        Path()
+          ..moveTo(size / 2, 6)
+          ..lineTo(size - 8, size - 10)
+          ..lineTo(size / 2, size - 28)
+          ..lineTo(8, size - 10)
+          ..close();
+    canvas.drawShadow(path, Colors.black54, 4, false);
+    canvas.drawPath(path, fill);
+    canvas.drawPath(path, stroke);
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(size.toInt(), size.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return BitmapDescriptor.fromBytes(data!.buffer.asUint8List());
   }
 
   @override
@@ -93,6 +144,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     _rideSub?.cancel();
     _posSub?.cancel();
     _radiusTimer?.cancel();
+    _tts.stop();
     super.dispose();
   }
 
@@ -148,8 +200,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   Future<bool> _ensurePermission() async {
     if (!await Geolocator.isLocationServiceEnabled()) return false;
     var p = await Geolocator.checkPermission();
-    if (p == LocationPermission.denied)
+    if (p == LocationPermission.denied) {
       p = await Geolocator.requestPermission();
+    }
     return p != LocationPermission.denied &&
         p != LocationPermission.deniedForever;
   }
@@ -210,6 +263,17 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   Future<void> _moveCamera(LatLng t) async =>
       _mapCtrl?.animateCamera(CameraUpdate.newLatLngZoom(t, 15));
+
+  // FIX #2 + #7: Navigation camera tracks position with tilt and bearing
+  Future<void> _moveCameraNav(
+    LatLng t,
+    double heading, {
+    double zoom = 18.2,
+  }) async => _mapCtrl?.animateCamera(
+    CameraUpdate.newCameraPosition(
+      CameraPosition(target: t, zoom: zoom, tilt: 55, bearing: heading),
+    ),
+  );
 
   Future<void> _fitBounds(LatLng a, LatLng b) async {
     final bounds = LatLngBounds(
@@ -290,11 +354,14 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     if (mounted) setState(() => _routeState = _RouteState.loading);
 
     try {
+      // FIX #5: Add departure_time for accurate ETA
       final uri =
           Uri.https('maps.googleapis.com', '/maps/api/directions/json', {
             'origin': '${origin.latitude},${origin.longitude}',
             'destination': '${dest.latitude},${dest.longitude}',
             'mode': 'driving',
+            'departure_time': 'now',
+            'alternatives': 'false',
             'key': MapsConfig.directionsApiKey,
           });
       final res = await http.get(uri).timeout(const Duration(seconds: 15));
@@ -323,15 +390,25 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       final pts = info.steps
           .expand((s) => s.polylinePoints)
           .toList(growable: false);
+
       setState(() {
         _routeInfo = info;
         _routePoints = pts;
+        _closestPolylineIndex = 0; // FIX #3: reset on new route
         _routeState = _RouteState.success;
         _routeError = null;
         _lastRouteStatus = ride.status;
       });
       _applyProgress(ride);
-      unawaited(_fitBounds(origin, dest));
+        if (ride.status != RideStatus.inProgress) {
+          unawaited(_fitBounds(origin, dest));
+        }
+
+        // FIX #12: Speak first instruction (in-progress only)
+        if (info.steps.isNotEmpty &&
+            ride.status == RideStatus.inProgress) {
+          _speakInstruction(info.steps.first.instruction);
+        }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -354,6 +431,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           _routeError = null;
           _routePoints = [];
           _routeInfo = null;
+          _closestPolylineIndex = 0; // FIX #3
         });
     }
   }
@@ -383,19 +461,51 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       return;
     }
 
-    var ci = 0;
+    // FIX #3: Windowed search from last known index
+    final searchStart = _closestPolylineIndex;
+    final searchEnd = min(searchStart + 30, _routePoints.length);
+
+    var ci = searchStart;
     var cd = double.infinity;
-    for (var i = 0; i < _routePoints.length; i++) {
+
+    for (var i = searchStart; i < searchEnd; i++) {
       final d = _haversineKm(cur, _routePoints[i]);
       if (d < cd) {
         cd = d;
         ci = i;
       }
     }
+
+    if (ci == searchStart && searchStart > 0) {
+      for (var i = 0; i < _routePoints.length; i++) {
+        final d = _haversineKm(cur, _routePoints[i]);
+        if (d < cd) {
+          cd = d;
+          ci = i;
+        }
+      }
+    }
+
+    _closestPolylineIndex = ci;
+
+    // FIX #4: Off-route detection
+    if (cd * 1000 > 40) {
+      unawaited(_updateRoute(ride, force: true));
+      return;
+    }
+
     if (!mounted) return;
     final theme = Theme.of(context);
+
     setState(() {
+      // FIX #6: Full gray base route + colored remaining route
       _polylines = {
+        Polyline(
+          polylineId: const PolylineId('full_route'),
+          color: Colors.grey.shade300,
+          width: 6,
+          points: _routePoints,
+        ),
         Polyline(
           polylineId: const PolylineId('traveled'),
           color: Colors.grey.shade400,
@@ -410,6 +520,29 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         ),
       };
     });
+  }
+
+  // FIX #12: Voice navigation
+  Future<void> _speakInstruction(String instruction) async {
+    if (instruction == _lastSpokenInstruction) return;
+    _lastSpokenInstruction = instruction;
+    await _tts.speak(instruction);
+  }
+
+  void _checkVoicePrompt(LatLng cur) {
+    final info = _routeInfo;
+    if (info == null || info.steps.isEmpty) return;
+    for (final step in info.steps) {
+      final anchor =
+          step.startLocation ??
+          (step.polylinePoints.isNotEmpty ? step.polylinePoints.first : null);
+      if (anchor == null) continue;
+      final dist = _haversineKm(cur, anchor) * 1000;
+      if (dist < 80) {
+        _speakInstruction(step.instruction);
+        break;
+      }
+    }
   }
 
   // ── Distance / fare ───────────────────────────────────────────────
@@ -530,13 +663,28 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       ),
     ).listen((pos) {
       final ll = LatLng(pos.latitude, pos.longitude);
-      _currentLoc = ll;
+      double heading = pos.heading.isNaN ? 0 : pos.heading;
+
+      // FIX #1: setState so HUD and map rebuild with new position
+      if (!mounted) return;
+      setState(() {
+        _currentLoc = ll;
+        _currentHeading = heading;
+      });
+
       if (_activeRideId != null)
         _rideRepo.updateCustomerLocation(
           rideId: id,
           lat: ll.latitude,
           lng: ll.longitude,
         );
+
+        // FIX #2 + #7: Move camera with tilt and bearing during navigation
+        if (_activeRide?.status == RideStatus.inProgress) {
+          unawaited(_moveCameraNav(ll, heading, zoom: 19.2));
+          _checkVoicePrompt(ll); // FIX #12
+        }
+
       final ride = _activeRide;
       if (ride != null) _applyProgress(ride);
     });
@@ -596,7 +744,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${_vehicle.label} requested. Est. PKR${_fare(_vehicle).toStringAsFixed(2)}',
+            // FIX #10: Removed erroneous ×50 multiplier — _fare() already returns PKR-equivalent
+            '${_vehicle.label} requested. Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
           ),
         ),
       );
@@ -666,11 +815,10 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   bool get _hasRide => _activeRideId != null;
 
-  bool get _showHUD =>
-      _routeInfo != null &&
-      _activeRide != null &&
-      (_activeRide!.status == RideStatus.booked ||
-          _activeRide!.status == RideStatus.inProgress);
+    bool get _showHUD =>
+        _routeInfo != null &&
+        _activeRide != null &&
+        _activeRide!.status == RideStatus.inProgress;
 
   String get _statusLabel => switch (_activeRide?.status) {
     RideStatus.requested =>
@@ -801,7 +949,13 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     final center = _currentLoc ?? _fallback;
     final riderLat = _activeRide?.riderLat;
     final riderLng = _activeRide?.riderLng;
-    final showRider = _activeRide?.status != RideStatus.inProgress;
+    final isNavState =
+        _activeRide?.status == RideStatus.booked ||
+        _activeRide?.status == RideStatus.inProgress;
+    final showPickupMarker = !isNavState;
+    final showHeadingMarker =
+        _activeRide?.status == RideStatus.inProgress && _currentLoc != null;
+    final showRider = !_showHUD;
 
     return Scaffold(
       appBar: AppBar(
@@ -827,33 +981,50 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   height: 260,
                   child: Stack(
                     children: [
-                      // Google Map
                       Positioned.fill(
                         child: GoogleMap(
                           initialCameraPosition: CameraPosition(
                             target: center,
                             zoom: 14,
                           ),
-                          gestureRecognizers: {
-                            Factory<OneSequenceGestureRecognizer>(
-                              () => EagerGestureRecognizer(),
-                            ),
-                          },
+                          // FIX #11: Use PanGestureRecognizer
+                          gestureRecognizers:
+                              <Factory<OneSequenceGestureRecognizer>>{
+                                Factory<PanGestureRecognizer>(
+                                  () => PanGestureRecognizer(),
+                                ),
+                              },
                           onMapCreated: (c) {
                             _mapCtrl = c;
                             if (_currentLoc != null) _moveCamera(_currentLoc!);
                           },
                           onTap: _onMapTapped,
-                          myLocationEnabled: _currentLoc != null,
+                            myLocationEnabled:
+                                _currentLoc != null && !showHeadingMarker,
                           myLocationButtonEnabled: true,
                           zoomControlsEnabled: true,
                           polylines: _polylines,
                           markers: {
-                            Marker(
-                              markerId: const MarkerId('pickup'),
-                              position: center,
-                              infoWindow: const InfoWindow(title: 'Pickup'),
-                            ),
+                            if (showHeadingMarker)
+                              Marker(
+                                markerId: const MarkerId('heading'),
+                                position: _currentLoc!,
+                                infoWindow: const InfoWindow(title: 'Heading'),
+                                rotation: _currentHeading,
+                                flat: true,
+                                anchor: const Offset(0.5, 0.5),
+                                icon:
+                                    _headingIcon ??
+                                    BitmapDescriptor.defaultMarkerWithHue(
+                                      BitmapDescriptor.hueAzure,
+                                    ),
+                              ),
+                            if (showPickupMarker)
+                              Marker(
+                                markerId: const MarkerId('pickup'),
+                                position: center,
+                                infoWindow: const InfoWindow(title: 'Pickup'),
+                              ),
                             if (_dropoffLatLng != null)
                               Marker(
                                 markerId: const MarkerId('dropoff'),
@@ -878,7 +1049,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                         ),
                       ),
 
-                      // Navigation HUD — top banner + bottom ETA bar
+                      // Navigation HUD
                       if (_showHUD)
                         NavigationHUD(
                           steps: _routeInfo!.steps,
@@ -985,8 +1156,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                             ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
                             : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
                       ),
+                      // FIX #10: Removed ×50 bug — fare is already correct
                       Text(
-                        'Est. PKR ${(_fare(_vehicle) * 50).toStringAsFixed(2)}',
+                        'Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
                         style: theme.textTheme.titleMedium,
                       ),
                     ],

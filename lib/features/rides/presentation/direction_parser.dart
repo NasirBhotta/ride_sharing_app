@@ -6,12 +6,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'navigation_hud.dart';
 
 /// Parses a raw Google Directions API JSON response into a list of [NavStep].
-///
-/// Usage:
-/// ```dart
-/// final result = await http.get(Uri.parse(directionsUrl));
-/// final parsed = DirectionsParser.parse(result.body);
-/// ```
 class DirectionsParser {
   DirectionsParser._();
 
@@ -44,11 +38,22 @@ class DirectionsParser {
             .map((p) => LatLng(p.latitude, p.longitude))
             .toList();
 
+    // FIX #9: Store step start location for accurate step detection
+    final startLoc = step['start_location'] as Map?;
+    final startLatLng =
+        startLoc != null
+            ? LatLng(
+              (startLoc['lat'] as num).toDouble(),
+              (startLoc['lng'] as num).toDouble(),
+            )
+            : (points.isNotEmpty ? points.first : null);
+
     return NavStep(
       instruction: instruction,
       distanceM: distanceVal.toDouble(),
       maneuver: maneuver,
       polylinePoints: points,
+      startLocation: startLatLng,
     );
   }
 
@@ -64,15 +69,17 @@ class DirectionsParser {
         .trim();
   }
 
+  // FIX #8: Dart switch does not support || in case expressions — use separate cases
   static ManeuverType _parseManeuver(String? maneuver) => switch (maneuver) {
     'turn-left' => ManeuverType.turnLeft,
     'turn-right' => ManeuverType.turnRight,
     'turn-slight-left' => ManeuverType.slightLeft,
     'turn-slight-right' => ManeuverType.slightRight,
-    'uturn-left' || 'uturn-right' => ManeuverType.uTurn,
-    'roundabout-left' ||
-    'roundabout-right' ||
-    'turn-sharp-left' ||
+    'uturn-left' => ManeuverType.uTurn,
+    'uturn-right' => ManeuverType.uTurn,
+    'roundabout-left' => ManeuverType.roundabout,
+    'roundabout-right' => ManeuverType.roundabout,
+    'turn-sharp-left' => ManeuverType.roundabout,
     'turn-sharp-right' => ManeuverType.roundabout,
     _ => ManeuverType.straight,
   };

@@ -69,6 +69,7 @@ class AuthRepository {
         'fullName': fullName,
         'email': email,
         'role': role.value,
+        'onboardingCompleted': false,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
