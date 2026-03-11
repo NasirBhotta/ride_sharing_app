@@ -41,12 +41,20 @@ class _CustomerOnboardingPageState extends State<CustomerOnboardingPage> {
 
   Future<void> _pickDate(TextEditingController ctrl) async {
     final now = DateTime.now();
-    final initial = DateTime(now.year - 24, now.month, now.day);
+    final latest = DateTime(now.year - 16, now.month, now.day);
+    final earliest = DateTime(now.year - 80, now.month, now.day);
+    final preferred = DateTime(now.year - 24, now.month, now.day);
+    final initial =
+        preferred.isAfter(latest)
+            ? latest
+            : preferred.isBefore(earliest)
+            ? earliest
+            : preferred;
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
-      firstDate: DateTime(now.year - 80),
-      lastDate: DateTime(now.year - 16),
+      firstDate: earliest,
+      lastDate: latest,
     );
     if (picked == null) return;
     ctrl.text =
@@ -359,20 +367,22 @@ class _CustomerOnboardingPageState extends State<CustomerOnboardingPage> {
                     onPressed: _step == 0 || _saving ? null : _back,
                     child: const Text('Back'),
                   ),
-                  const Spacer(),
-                  FilledButton(
-                    onPressed: _saving ? null : _next,
-                    child:
-                        _saving
-                            ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                                color: Colors.white,
-                              ),
-                            )
-                            : Text(_step == 2 ? 'Finish' : 'Continue'),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _saving ? null : _next,
+                      child:
+                          _saving
+                              ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: Colors.white,
+                                ),
+                              )
+                              : Text(_step == 2 ? 'Finish' : 'Continue'),
+                    ),
                   ),
                 ],
               ),

@@ -92,6 +92,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   @override
   void initState() {
     super.initState();
+    _dropoffCtrl.addListener(_onDropoffChanged);
     _initLocation();
     _initTts();
     _loadHeadingIcon();
@@ -137,6 +138,7 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   @override
   void dispose() {
+    _dropoffCtrl.removeListener(_onDropoffChanged);
     _pickupCtrl.dispose();
     _dropoffCtrl.dispose();
     _messageCtrl.dispose();
@@ -146,6 +148,11 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     _radiusTimer?.cancel();
     _tts.stop();
     super.dispose();
+  }
+
+  void _onDropoffChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   // ── Location ──────────────────────────────────────────────────────
@@ -969,247 +976,140 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
         ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Map with HUD overlay ───────────────────────────
-              ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: SizedBox(
-                  height: 260,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: GoogleMap(
-                          initialCameraPosition: CameraPosition(
-                            target: center,
-                            zoom: 14,
-                          ),
-                          // FIX #11: Use PanGestureRecognizer
-                          gestureRecognizers:
-                              <Factory<OneSequenceGestureRecognizer>>{
-                                Factory<PanGestureRecognizer>(
-                                  () => PanGestureRecognizer(),
-                                ),
-                              },
-                          onMapCreated: (c) {
-                            _mapCtrl = c;
-                            if (_currentLoc != null) _moveCamera(_currentLoc!);
-                          },
-                          onTap: _onMapTapped,
-                            myLocationEnabled:
-                                _currentLoc != null && !showHeadingMarker,
-                          myLocationButtonEnabled: true,
-                          zoomControlsEnabled: true,
-                          polylines: _polylines,
-                          markers: {
-                            if (showHeadingMarker)
-                              Marker(
-                                markerId: const MarkerId('heading'),
-                                position: _currentLoc!,
-                                infoWindow: const InfoWindow(title: 'Heading'),
-                                rotation: _currentHeading,
-                                flat: true,
-                                anchor: const Offset(0.5, 0.5),
-                                icon:
-                                    _headingIcon ??
-                                    BitmapDescriptor.defaultMarkerWithHue(
-                                      BitmapDescriptor.hueAzure,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final mapHeight = constraints.maxHeight * 0.6;
+            return Stack(
+              children: [
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: mapHeight,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(18),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: GoogleMap(
+                              initialCameraPosition: CameraPosition(
+                                target: center,
+                                zoom: 14,
+                              ),
+                              // FIX #11: Use PanGestureRecognizer
+                              gestureRecognizers:
+                                  <Factory<OneSequenceGestureRecognizer>>{
+                                    Factory<PanGestureRecognizer>(
+                                      () => PanGestureRecognizer(),
                                     ),
-                              ),
-                            if (showPickupMarker)
-                              Marker(
-                                markerId: const MarkerId('pickup'),
-                                position: center,
-                                infoWindow: const InfoWindow(title: 'Pickup'),
-                              ),
-                            if (_dropoffLatLng != null)
-                              Marker(
-                                markerId: const MarkerId('dropoff'),
-                                position: _dropoffLatLng!,
-                                infoWindow: const InfoWindow(title: 'Dropoff'),
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueAzure,
-                                ),
-                              ),
-                            if (showRider &&
-                                riderLat != null &&
-                                riderLng != null)
-                              Marker(
-                                markerId: const MarkerId('rider'),
-                                position: LatLng(riderLat, riderLng),
-                                infoWindow: const InfoWindow(title: 'Driver'),
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueGreen,
-                                ),
-                              ),
-                          },
-                        ),
-                      ),
-
-                      // Navigation HUD
-                      if (_showHUD)
-                        NavigationHUD(
-                          steps: _routeInfo!.steps,
-                          currentPos: _currentLoc ?? center,
-                          totalDistM: _routeInfo!.totalDistanceM,
-                          etaSeconds: _routeInfo!.totalDurationSec,
-                          rideStatus: _activeRide!.status,
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              if (_loadingLoc)
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 8),
-                  child: LinearProgressIndicator(minHeight: 2),
-                ),
-
-              if (_hasRide) ...[
-                _routeBadge(theme),
-                if (_routeState != _RouteState.idle &&
-                    _routeState != _RouteState.success)
-                  const SizedBox(height: 8),
-                const SizedBox(height: 4),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  decoration: BoxDecoration(
-                    color: _statusColor(theme).withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _statusColor(theme), width: 1.4),
-                  ),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  child: Row(
-                    children: [
-                      if (_activeRide?.status == RideStatus.requested ||
-                          _activeRide?.status == RideStatus.booked)
-                        SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: _statusColor(theme),
-                          ),
-                        ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          _statusLabel,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: _statusColor(theme),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: RideLocationFields(
-                    pickupController: _pickupCtrl,
-                    dropoffController: _dropoffCtrl,
-                    enabled: !_hasRide,
-                    onUseCurrentLocation: _initLocation,
-                    onDropoffSubmitted: (_) => _resolveDropoff(),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              if (!_hasRide) ...[
-                Text('Choose vehicle', style: theme.textTheme.titleMedium),
-                const SizedBox(height: 8),
-                ...VehicleType.values.map(
-                  (t) => Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: VehicleOptionCard(
-                      type: t,
-                      selected: t == _vehicle,
-                      fare: _fare(t),
-                      onTap: () => setState(() => _vehicle = t),
-                    ),
-                  ),
-                ),
-              ],
-
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        _dropoffLatLng != null
-                            ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
-                            : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
-                      ),
-                      // FIX #10: Removed ×50 bug — fare is already correct
-                      Text(
-                        'Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
-                        style: theme.textTheme.titleMedium,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              if (_hasRide) ...[
-                const SizedBox(height: 16),
-                Text('Messages', style: theme.textTheme.titleMedium),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 180,
-                  child: StreamBuilder<List<RideMessage>>(
-                    stream: _rideRepo.watchMessages(_activeRideId!),
-                    builder: (ctx, snap) {
-                      final msgs = snap.data ?? [];
-                      if (msgs.isEmpty)
-                        return const Center(child: Text('No messages yet.'));
-                      return ListView.builder(
-                        reverse: true,
-                        itemCount: msgs.length,
-                        itemBuilder:
-                            (_, i) => ListTile(
-                              dense: true,
-                              title: Text(msgs[i].text),
-                              subtitle: Text(msgs[i].senderRole),
+                                  },
+                              onMapCreated: (c) {
+                                _mapCtrl = c;
+                                if (_currentLoc != null)
+                                  _moveCamera(_currentLoc!);
+                              },
+                              onTap: _onMapTapped,
+                              myLocationEnabled:
+                                  _currentLoc != null && !showHeadingMarker,
+                              myLocationButtonEnabled: true,
+                              zoomControlsEnabled: true,
+                              polylines: _polylines,
+                              markers: {
+                                if (showHeadingMarker)
+                                  Marker(
+                                    markerId: const MarkerId('heading'),
+                                    position: _currentLoc!,
+                                    infoWindow:
+                                        const InfoWindow(title: 'Heading'),
+                                    rotation: _currentHeading,
+                                    flat: true,
+                                    anchor: const Offset(0.5, 0.5),
+                                    icon:
+                                        _headingIcon ??
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueAzure,
+                                        ),
+                                  ),
+                                if (showPickupMarker)
+                                  Marker(
+                                    markerId: const MarkerId('pickup'),
+                                    position: center,
+                                    infoWindow:
+                                        const InfoWindow(title: 'Pickup'),
+                                  ),
+                                if (_dropoffLatLng != null)
+                                  Marker(
+                                    markerId: const MarkerId('dropoff'),
+                                    position: _dropoffLatLng!,
+                                    infoWindow:
+                                        const InfoWindow(title: 'Dropoff'),
+                                    icon:
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueAzure,
+                                        ),
+                                  ),
+                                if (showRider &&
+                                    riderLat != null &&
+                                    riderLng != null)
+                                  Marker(
+                                    markerId: const MarkerId('rider'),
+                                    position: LatLng(riderLat, riderLng),
+                                    infoWindow:
+                                        const InfoWindow(title: 'Driver'),
+                                    icon:
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueGreen,
+                                        ),
+                                  ),
+                              },
                             ),
-                      );
-                    },
-                  ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _messageCtrl,
-                        decoration: const InputDecoration(
-                          hintText: 'Message driver',
-                        ),
+                          ),
+
+                          // Navigation HUD
+                          if (_showHUD)
+                            NavigationHUD(
+                              steps: _routeInfo!.steps,
+                              currentPos: _currentLoc ?? center,
+                              totalDistM: _routeInfo!.totalDistanceM,
+                              etaSeconds: _routeInfo!.totalDurationSec,
+                              rideStatus: _activeRide!.status,
+                            ),
+                        ],
                       ),
                     ),
-                    IconButton(
-                      onPressed: _sendMessage,
-                      icon: const Icon(Icons.send),
-                    ),
-                  ],
+                  ),
+                ),
+                DraggableScrollableSheet(
+                  initialChildSize: 0.3,
+                  minChildSize: 0.2,
+                  maxChildSize: 0.85,
+                  builder: (context, scrollController) {
+                    return Container(
+                      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      decoration: BoxDecoration(
+                        color: theme.scaffoldBackgroundColor,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.12),
+                            blurRadius: 16,
+                            offset: const Offset(0, -4),
+                          ),
+                        ],
+                      ),
+                      child: SingleChildScrollView(
+                        controller: scrollController,
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                        child: _buildBottomPanelContent(theme),
+                      ),
+                    );
+                  },
                 ),
               ],
-            ],
-          ),
+            );
+          },
         ),
       ),
       bottomNavigationBar: SafeArea(
@@ -1259,6 +1159,156 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
       ),
+    );
+  }
+
+
+  Widget _buildBottomPanelContent(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_loadingLoc)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
+
+        if (_hasRide) ...[
+          _routeBadge(theme),
+          if (_routeState != _RouteState.idle &&
+              _routeState != _RouteState.success)
+            const SizedBox(height: 8),
+          const SizedBox(height: 4),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            decoration: BoxDecoration(
+              color: _statusColor(theme).withOpacity(0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _statusColor(theme), width: 1.4),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              children: [
+                if (_activeRide?.status == RideStatus.requested ||
+                    _activeRide?.status == RideStatus.booked)
+                  SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _statusColor(theme),
+                    ),
+                  ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _statusLabel,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: _statusColor(theme),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: RideLocationFields(
+              pickupController: _pickupCtrl,
+              dropoffController: _dropoffCtrl,
+              enabled: !_hasRide,
+              onUseCurrentLocation: _initLocation,
+              onDropoffSubmitted: (_) => _resolveDropoff(),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        if (!_hasRide && _dropoffCtrl.text.trim().isNotEmpty) ...[
+          Text('Choose vehicle', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          ...VehicleType.values.map(
+            (t) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: VehicleOptionCard(
+                type: t,
+                selected: t == _vehicle,
+                fare: _fare(t),
+                onTap: () => setState(() => _vehicle = t),
+              ),
+            ),
+          ),
+        ],
+
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _dropoffLatLng != null
+                      ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
+                      : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
+                ),
+                // FIX #10: Removed ?50 bug ? fare is already correct
+                Text(
+                  'Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
+                  style: theme.textTheme.titleMedium,
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        if (_hasRide) ...[
+          const SizedBox(height: 16),
+          Text('Messages', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 180,
+            child: StreamBuilder<List<RideMessage>>(
+              stream: _rideRepo.watchMessages(_activeRideId!),
+              builder: (ctx, snap) {
+                final msgs = snap.data ?? [];
+                if (msgs.isEmpty)
+                  return const Center(child: Text('No messages yet.'));
+                return ListView.builder(
+                  reverse: true,
+                  itemCount: msgs.length,
+                  itemBuilder:
+                      (_, i) => ListTile(
+                        dense: true,
+                        title: Text(msgs[i].text),
+                        subtitle: Text(msgs[i].senderRole),
+                      ),
+                );
+              },
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _messageCtrl,
+                  decoration: const InputDecoration(
+                    hintText: 'Message driver',
+                  ),
+                ),
+              ),
+              IconButton(
+                onPressed: _sendMessage,
+                icon: const Icon(Icons.send),
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 }

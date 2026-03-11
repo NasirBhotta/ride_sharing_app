@@ -837,136 +837,136 @@ class _RiderHomePageState extends State<RiderHomePage>
         ],
       ),
       body: SafeArea(
-        child: Column(
-          children: [
-            // ── Map with HUD overlay ─────────────────────────────
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: SizedBox(
-                  height: 240,
-                  child: Stack(
-                    children: [
-                      // Google Map
-                      Positioned.fill(
-                        child: GoogleMap(
-                          initialCameraPosition: CameraPosition(
-                            target: center,
-                            zoom: 14,
-                          ),
-                          // FIX #11: Use PanGestureRecognizer instead of EagerGestureRecognizer
-                          gestureRecognizers:
-                              <Factory<OneSequenceGestureRecognizer>>{
-                                Factory<PanGestureRecognizer>(
-                                  () => PanGestureRecognizer(),
-                                ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final mapHeight = constraints.maxHeight * 0.6;
+            return Stack(
+              children: [
+                Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: mapHeight,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Stack(
+                        children: [
+                          // Google Map
+                          Positioned.fill(
+                            child: GoogleMap(
+                              initialCameraPosition: CameraPosition(
+                                target: center,
+                                zoom: 14,
+                              ),
+                              // FIX #11: Use PanGestureRecognizer instead of EagerGestureRecognizer
+                              gestureRecognizers:
+                                  <Factory<OneSequenceGestureRecognizer>>{
+                                    Factory<PanGestureRecognizer>(
+                                      () => PanGestureRecognizer(),
+                                    ),
+                                  },
+                              onMapCreated: (c) {
+                                _mapCtrl = c;
+                                if (_currentLoc != null)
+                                  _moveCamera(_currentLoc!);
                               },
-                          onMapCreated: (c) {
-                            _mapCtrl = c;
-                            if (_currentLoc != null) _moveCamera(_currentLoc!);
-                          },
-                          myLocationEnabled:
-                              _currentLoc != null && !showHeadingMarker,
-                          myLocationButtonEnabled: true,
-                          zoomControlsEnabled: false,
-                          polylines: _polylines,
-                          markers: {
-                            if (showHeadingMarker)
-                              Marker(
-                                markerId: const MarkerId('heading'),
-                                position: _currentLoc!,
-                                infoWindow: const InfoWindow(title: 'Heading'),
-                                rotation: _currentHeading,
-                                flat: true,
-                                anchor: const Offset(0.5, 0.5),
-                                icon:
-                                    _headingIcon ??
-                                    BitmapDescriptor.defaultMarkerWithHue(
+                              myLocationEnabled:
+                                  _currentLoc != null && !showHeadingMarker,
+                              myLocationButtonEnabled: true,
+                              zoomControlsEnabled: false,
+                              polylines: _polylines,
+                              markers: {
+                                if (showHeadingMarker)
+                                  Marker(
+                                    markerId: const MarkerId('heading'),
+                                    position: _currentLoc!,
+                                    infoWindow: const InfoWindow(title: 'Heading'),
+                                    rotation: _currentHeading,
+                                    flat: true,
+                                    anchor: const Offset(0.5, 0.5),
+                                    icon:
+                                        _headingIcon ??
+                                        BitmapDescriptor.defaultMarkerWithHue(
+                                          BitmapDescriptor.hueAzure,
+                                        ),
+                                  )
+                                else
+                                  Marker(
+                                    markerId: const MarkerId('rider'),
+                                    position: center,
+                                    infoWindow: const InfoWindow(title: 'You'),
+                                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                                      BitmapDescriptor.hueGreen,
+                                    ),
+                                  ),
+                                if (showDestinationMarker &&
+                                    custLat != null &&
+                                    custLng != null)
+                                  Marker(
+                                    markerId: const MarkerId('customer'),
+                                    position: LatLng(custLat, custLng),
+                                    infoWindow: InfoWindow(title: custTitle),
+                                    icon: BitmapDescriptor.defaultMarkerWithHue(
                                       BitmapDescriptor.hueAzure,
                                     ),
-                              )
-                            else
-                              Marker(
-                                markerId: const MarkerId('rider'),
-                                position: center,
-                                infoWindow: const InfoWindow(title: 'You'),
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueGreen,
-                                ),
-                              ),
-                            if (showDestinationMarker &&
-                                custLat != null &&
-                                custLng != null)
-                              Marker(
-                                markerId: const MarkerId('customer'),
-                                position: LatLng(custLat, custLng),
-                                infoWindow: InfoWindow(title: custTitle),
-                                icon: BitmapDescriptor.defaultMarkerWithHue(
-                                  BitmapDescriptor.hueAzure,
-                                ),
-                              ),
-                          },
-                        ),
-                      ),
+                                  ),
+                              },
+                            ),
+                          ),
 
-                      // Navigation HUD
-                      if (_showHUD)
-                        NavigationHUD(
-                          steps: _routeInfo!.steps,
-                          currentPos: _currentLoc ?? center,
-                          totalDistM: _routeInfo!.totalDistanceM,
-                          etaSeconds: _routeInfo!.totalDurationSec,
-                          rideStatus: _activeRide!.status,
-                        ),
-                    ],
+                          // Navigation HUD
+                          if (_showHUD)
+                            NavigationHUD(
+                              steps: _routeInfo!.steps,
+                              currentPos: _currentLoc ?? center,
+                              totalDistM: _routeInfo!.totalDistanceM,
+                              etaSeconds: _routeInfo!.totalDurationSec,
+                              rideStatus: _activeRide!.status,
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-
-            if (_loadingLoc)
-              const Padding(
-                padding: EdgeInsets.only(top: 4),
-                child: LinearProgressIndicator(minHeight: 2),
-              ),
-            if (_routeState == _RouteState.loading)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: LinearProgressIndicator(
-                  minHeight: 2,
-                  color: theme.colorScheme.primary,
-                ),
-              ),
-
-            if (_hasRide)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: _routeBadge(theme),
-                ),
-              ),
-
-            const SizedBox(height: 6),
-
-            Expanded(
-              child:
-                  _hasRide
-                      ? SlideTransition(
-                        position: _panelSlide,
-                        child: _buildActivePanel(
+                DraggableScrollableSheet(
+                  initialChildSize: 0.3,
+                  minChildSize: 0.2,
+                  maxChildSize: 0.85,
+                  builder: (context, scrollController) {
+                    return Container(
+                      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      decoration: BoxDecoration(
+                        color: theme.scaffoldBackgroundColor,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.12),
+                            blurRadius: 16,
+                            offset: const Offset(0, -4),
+                          ),
+                        ],
+                      ),
+                      child: SingleChildScrollView(
+                        controller: scrollController,
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                        child: _buildBottomPanelContent(
                           theme,
                           isDark,
                           statusColor,
                           statusIcon,
                         ),
-                      )
-                      : _buildRideList(theme, isDark),
-            ),
-          ],
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
+          },
         ),
       ),
+
     );
   }
 
@@ -978,11 +978,9 @@ class _RiderHomePageState extends State<RiderHomePage>
     Color statusColor,
     IconData statusIcon,
   ) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
           AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             padding: const EdgeInsets.all(14),

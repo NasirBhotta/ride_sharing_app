@@ -59,12 +59,14 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
 
   Future<void> _pickDate(TextEditingController ctrl, int minAge) async {
     final now = DateTime.now();
-    final initial = DateTime(now.year - minAge, now.month, now.day);
+    final latest = DateTime(now.year - minAge, now.month, now.day);
+    final earliest = DateTime(now.year - 80, now.month, now.day);
+    final initial = latest.isAfter(earliest) ? latest : earliest;
     final picked = await showDatePicker(
       context: context,
       initialDate: initial,
-      firstDate: DateTime(now.year - 80),
-      lastDate: DateTime(now.year - minAge),
+      firstDate: earliest,
+      lastDate: latest,
     );
     if (picked == null) return;
     ctrl.text = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-'
@@ -581,20 +583,22 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                     onPressed: _step == 0 || _saving ? null : _back,
                     child: const Text('Back'),
                   ),
-                  const Spacer(),
-                  FilledButton(
-                    onPressed: _saving ? null : _next,
-                    child:
-                        _saving
-                            ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                                color: Colors.white,
-                              ),
-                            )
-                            : Text(_step == 4 ? 'Finish' : 'Continue'),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _saving ? null : _next,
+                      child:
+                          _saving
+                              ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: Colors.white,
+                                ),
+                              )
+                              : Text(_step == 4 ? 'Finish' : 'Continue'),
+                    ),
                   ),
                 ],
               ),
@@ -648,16 +652,20 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
         const SizedBox(height: 8),
         Row(
           children: [
-            OutlinedButton.icon(
-              onPressed: onCamera,
-              icon: const Icon(Icons.document_scanner_outlined),
-              label: const Text('Scan'),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onCamera,
+                icon: const Icon(Icons.document_scanner_outlined),
+                label: const Text('Scan'),
+              ),
             ),
             const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: onGallery,
-              icon: const Icon(Icons.photo_camera_back_outlined),
-              label: const Text('Upload'),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: onGallery,
+                icon: const Icon(Icons.photo_camera_back_outlined),
+                label: const Text('Upload'),
+              ),
             ),
           ],
         ),
