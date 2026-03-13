@@ -1,9 +1,43 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:ride_sharing_app/features/admin/data/admin_repository.dart';
+import 'package:ride_sharing_app/features/auth/domain/user.dart';
+import 'package:ride_sharing_app/features/rides/domain/ride_request.dart';
+import 'package:ride_sharing_app/features/rides/domain/vehicle_type.dart';
+import 'package:ride_sharing_app/features/role/domain/user_role.dart';
 
-class AdminDashboardPage extends StatelessWidget {
+
+enum AdminSection { overview, rides, customers, riders, payments, support }
+
+extension AdminSectionX on AdminSection {
+  String get label => switch (this) {
+        AdminSection.overview => 'Overview',
+        AdminSection.rides => 'Rides',
+        AdminSection.customers => 'Customers',
+        AdminSection.riders => 'Riders',
+        AdminSection.payments => 'Payments',
+        AdminSection.support => 'Support',
+      };
+}
+
+class AdminDashboardPage extends StatefulWidget {
   const AdminDashboardPage({super.key});
+
+  @override
+  State<AdminDashboardPage> createState() => _AdminDashboardPageState();
+}
+
+class _AdminDashboardPageState extends State<AdminDashboardPage> {
+  late final AdminRepository _adminRepository;
+  AdminSection _selectedSection = AdminSection.overview;
+
+  @override
+  void initState() {
+    super.initState();
+    _adminRepository = AdminRepository();
+  }
 
   static const _sectionGap = 18.0;
 
@@ -17,27 +51,30 @@ class AdminDashboardPage extends StatelessWidget {
         final isTablet = constraints.maxWidth >= 760;
 
         return Scaffold(
-          appBar:
-              isDesktop
-                  ? null
-                  : AppBar(
-                    title: const Text('Admin Dashboard'),
-                    actions: [
-                      IconButton(
-                        onPressed: () => FirebaseAuth.instance.signOut(),
-                        icon: const Icon(Icons.logout),
-                        tooltip: 'Sign out',
-                      ),
-                    ],
-                  ),
-          drawer:
-              isDesktop
-                  ? null
-                  : Drawer(
-                    child: _AdminSidebar(
-                      onTapSignOut: () => FirebaseAuth.instance.signOut(),
+          appBar: isDesktop
+              ? null
+              : AppBar(
+                  title: Text(_sectionTitle),
+                  actions: [
+                    IconButton(
+                      onPressed: () => FirebaseAuth.instance.signOut(),
+                      icon: const Icon(Icons.logout),
+                      tooltip: 'Sign out',
                     ),
+                  ],
+                ),
+          drawer: isDesktop
+              ? null
+              : Drawer(
+                  child: _AdminSidebar(
+                    selectedSection: _selectedSection,
+                    onSelect: (section) {
+                      setState(() => _selectedSection = section);
+                      Navigator.pop(context);
+                    },
+                    onTapSignOut: () => FirebaseAuth.instance.signOut(),
                   ),
+                ),
           body: SafeArea(
             child: Row(
               children: [
@@ -45,6 +82,9 @@ class AdminDashboardPage extends StatelessWidget {
                   SizedBox(
                     width: 260,
                     child: _AdminSidebar(
+                      selectedSection: _selectedSection,
+                      onSelect: (section) =>
+                          setState(() => _selectedSection = section),
                       onTapSignOut: () => FirebaseAuth.instance.signOut(),
                     ),
                   ),
@@ -63,18 +103,7 @@ class AdminDashboardPage extends StatelessWidget {
                     ),
                     child: SingleChildScrollView(
                       padding: EdgeInsets.all(isTablet ? 24 : 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _HeaderBar(isTablet: isTablet),
-                          const SizedBox(height: _sectionGap),
-                          _MetricsGrid(isTablet: isTablet),
-                          const SizedBox(height: _sectionGap),
-                          _ChartsSection(isTablet: isTablet),
-                          const SizedBox(height: _sectionGap),
-                          _BottomSection(isTablet: isTablet),
-                        ],
-                      ),
+                      child: _buildSectionContent(isTablet),
                     ),
                   ),
                 ),
@@ -85,12 +114,190 @@ class AdminDashboardPage extends StatelessWidget {
       },
     );
   }
+
+  String get _sectionTitle => _selectedSection.label;
+
+  Widget _buildSectionContent(bool isTablet) {
+    return switch (_selectedSection) {
+      AdminSection.overview => _buildOverviewSection(isTablet),
+      AdminSection.rides => _buildRidesSection(isTablet),
+      AdminSection.customers => _buildUsersSection(UserRole.customer, isTablet),
+      AdminSection.riders => _buildUsersSection(UserRole.rider, isTablet),
+      AdminSection.payments => _buildPaymentsSection(isTablet),
+      AdminSection.support => _buildPlaceholderSection(
+          title: 'Support',
+          message:
+              'Support tickets are not configured yet. Add a support collection to enable this view.',
+        ),
+    };
+  }
+
+  Widget _buildOverviewSection(bool isTablet) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _HeaderBar(isTablet: isTablet),
+        const SizedBox(height: _sectionGap),
+        StreamBuilder<int>(
+          stream: _adminRepository.getActiveRidesCount(),
+          builder: (context, activeRidesSnapshot) {
+            return StreamBuilder<int>(
+              stream: _adminRepository.getAvailableRidersCount(),
+              builder: (context, availableRidersSnapshot) {
+                return StreamBuilder<double>(
+                  stream: _adminRepository.getTodayRevenue(),
+                  builder: (context, revenueSnapshot) {
+                    final metrics = [
+                      _MetricData(
+                        label: 'Active rides',
+                        value: activeRidesSnapshot.data?.toString() ?? '--',
+                        delta: '',
+                        icon: Icons.local_taxi,
+                        color: const Color(0xFF2DD4BF),
+                      ),
+                      _MetricData(
+                        label: 'Available riders',
+                        value:
+                            availableRidersSnapshot.data?.toString() ?? '--',
+                        delta: '',
+                        icon: Icons.directions_car_filled,
+                        color: const Color(0xFF60A5FA),
+                      ),
+                      _MetricData(
+                        label: 'Revenue (24h)',
+                        value:
+                            'PKR ${NumberFormat.compact().format(revenueSnapshot.data ?? 0)}',
+                        delta: '',
+                        icon: Icons.payments_outlined,
+                        color: const Color(0xFF34D399),
+                      ),
+                    ];
+                    return _MetricsGrid(
+                      isTablet: isTablet,
+                      metrics: metrics,
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
+        const SizedBox(height: _sectionGap),
+        StreamBuilder<Map<String, double>>(
+          stream: _adminRepository.watchRevenueByCity(),
+          builder: (context, revenueSnapshot) {
+            return StreamBuilder<Map<VehicleType, int>>(
+              stream: _adminRepository.watchRideMix(),
+              builder: (context, rideMixSnapshot) {
+                return _ChartsSection(
+                  isTablet: isTablet,
+                  revenueByCity: revenueSnapshot.data ?? const {},
+                  rideMix: rideMixSnapshot.data ?? const {},
+                );
+              },
+            );
+          },
+        ),
+        const SizedBox(height: _sectionGap),
+        StreamBuilder<List<RideRequest>>(
+          stream: _adminRepository.watchRecentRides(),
+          builder: (context, ridesSnapshot) {
+            return StreamBuilder<Map<String, AppUser>>(
+              stream: _adminRepository.watchCustomersAndRiders(),
+              builder: (context, usersSnapshot) {
+                return _BottomSection(
+                  isTablet: isTablet,
+                  recentRides: ridesSnapshot.data ?? const [],
+                  usersById: usersSnapshot.data ?? const {},
+                );
+              },
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRidesSection(bool isTablet) {
+    return StreamBuilder<List<RideRequest>>(
+      stream: _adminRepository.watchAllRides(),
+      builder: (context, ridesSnapshot) {
+        return StreamBuilder<Map<String, AppUser>>(
+          stream: _adminRepository.watchCustomersAndRiders(),
+          builder: (context, usersSnapshot) {
+            return _RidesTable(
+              title: 'All rides',
+              emptyMessage: 'No rides found in Firestore yet.',
+              rides: ridesSnapshot.data ?? const [],
+              usersById: usersSnapshot.data ?? const {},
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildUsersSection(UserRole role, bool isTablet) {
+    return StreamBuilder<List<AppUser>>(
+      stream: _adminRepository.watchUsersByRole(role),
+      builder: (context, usersSnapshot) {
+        return _UsersListCard(
+          title: role.label,
+          users: usersSnapshot.data ?? const [],
+          emptyLabel: 'No ${role.label.toLowerCase()}s found',
+        );
+      },
+    );
+  }
+
+  Widget _buildPlaceholderSection({required String title, required String message}) {
+    return _PlaceholderCard(title: title, message: message);
+  }
+
+
+  Widget _buildPaymentsSection(bool isTablet) {
+    return StreamBuilder<List<RideRequest>>(
+      stream: _adminRepository.watchCompletedRides(),
+      builder: (context, ridesSnapshot) {
+        final rides = ridesSnapshot.data ?? const [];
+        final total = rides.fold<double>(
+          0,
+          (sum, ride) => sum + ride.estimatedFare,
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _PaymentsSummary(total: total, count: rides.length),
+            const SizedBox(height: 16),
+            StreamBuilder<Map<String, AppUser>>(
+              stream: _adminRepository.watchCustomersAndRiders(),
+              builder: (context, usersSnapshot) {
+                return _RidesTable(
+                  title: 'Completed rides',
+                  emptyMessage: 'No completed rides found yet.',
+                  rides: rides,
+                  usersById: usersSnapshot.data ?? const {},
+                );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
 }
 
 class _AdminSidebar extends StatelessWidget {
+  final AdminSection selectedSection;
+  final ValueChanged<AdminSection> onSelect;
   final VoidCallback onTapSignOut;
 
-  const _AdminSidebar({required this.onTapSignOut});
+  const _AdminSidebar({
+    required this.selectedSection,
+    required this.onSelect,
+    required this.onTapSignOut,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -142,33 +349,38 @@ class _AdminSidebar extends StatelessWidget {
           _SidebarItem(
             icon: Icons.analytics_outlined,
             label: 'Overview',
-            isActive: true,
-            onTap: () {},
+            isActive: selectedSection == AdminSection.overview,
+            onTap: () => onSelect(AdminSection.overview),
           ),
           _SidebarItem(
             icon: Icons.route_outlined,
             label: 'Rides',
-            onTap: () {},
+            isActive: selectedSection == AdminSection.rides,
+            onTap: () => onSelect(AdminSection.rides),
           ),
           _SidebarItem(
             icon: Icons.people_alt_outlined,
             label: 'Customers',
-            onTap: () {},
+            isActive: selectedSection == AdminSection.customers,
+            onTap: () => onSelect(AdminSection.customers),
           ),
           _SidebarItem(
             icon: Icons.directions_car_filled_outlined,
             label: 'Riders',
-            onTap: () {},
+            isActive: selectedSection == AdminSection.riders,
+            onTap: () => onSelect(AdminSection.riders),
           ),
           _SidebarItem(
             icon: Icons.payments_outlined,
             label: 'Payments',
-            onTap: () {},
+            isActive: selectedSection == AdminSection.payments,
+            onTap: () => onSelect(AdminSection.payments),
           ),
           _SidebarItem(
             icon: Icons.support_agent_outlined,
             label: 'Support',
-            onTap: () {},
+            isActive: selectedSection == AdminSection.support,
+            onTap: () => onSelect(AdminSection.support),
           ),
           const Spacer(),
           Padding(
@@ -329,42 +541,12 @@ class _HeaderBar extends StatelessWidget {
 
 class _MetricsGrid extends StatelessWidget {
   final bool isTablet;
+  final List<_MetricData> metrics;
 
-  const _MetricsGrid({required this.isTablet});
+  const _MetricsGrid({required this.isTablet, required this.metrics});
 
   @override
   Widget build(BuildContext context) {
-    final metrics = [
-      _MetricData(
-        label: 'Active rides',
-        value: '128',
-        delta: '+12%',
-        icon: Icons.local_taxi,
-        color: const Color(0xFF2DD4BF),
-      ),
-      _MetricData(
-        label: 'Available riders',
-        value: '342',
-        delta: '+4%',
-        icon: Icons.directions_car_filled,
-        color: const Color(0xFF60A5FA),
-      ),
-      _MetricData(
-        label: 'Avg. ETA',
-        value: '5.4 min',
-        delta: '-6%',
-        icon: Icons.timer_outlined,
-        color: const Color(0xFFF59E0B),
-      ),
-      _MetricData(
-        label: 'Revenue (24h)',
-        value: 'PKR 1.92M',
-        delta: '+18%',
-        icon: Icons.payments_outlined,
-        color: const Color(0xFF34D399),
-      ),
-    ];
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final columns = isTablet ? 4 : 2;
@@ -451,10 +633,17 @@ class _MetricCard extends StatelessWidget {
   }
 }
 
+
 class _ChartsSection extends StatelessWidget {
   final bool isTablet;
+  final Map<String, double> revenueByCity;
+  final Map<VehicleType, int> rideMix;
 
-  const _ChartsSection({required this.isTablet});
+  const _ChartsSection({
+    required this.isTablet,
+    required this.revenueByCity,
+    required this.rideMix,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -470,18 +659,14 @@ class _ChartsSection extends StatelessWidget {
       const FlSpot(6, 190),
     ];
 
-    final revenueBars = [
-      _BarData('Lahore', 180),
-      _BarData('Karachi', 220),
-      _BarData('Islamabad', 150),
-      _BarData('Peshawar', 110),
-    ];
+    final revenueBars = revenueByCity.entries
+        .map((entry) => _BarData(entry.key, entry.value))
+        .toList();
 
-    final rideSplit = [
-      _PieData('Car', 52, const Color(0xFF60A5FA)),
-      _PieData('Bike', 28, const Color(0xFF34D399)),
-      _PieData('Premium', 20, const Color(0xFFF59E0B)),
-    ];
+    final rideSplit = rideMix.entries
+        .map((entry) =>
+            _PieData(entry.key.id, entry.value.toDouble(), entry.key.color))
+        .toList();
 
     final lineCard = Card(
       child: Padding(
@@ -724,40 +909,41 @@ class _ChartsSection extends StatelessWidget {
 
 class _BottomSection extends StatelessWidget {
   final bool isTablet;
+  final List<RideRequest> recentRides;
+  final Map<String, AppUser> usersById;
 
-  const _BottomSection({required this.isTablet});
+  const _BottomSection({
+    required this.isTablet,
+    required this.recentRides,
+    required this.usersById,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final recentRides = [
-      _RideRow('R-23904', 'Ayesha K', 'Bike', '3.2 km', 'Completed', 'PKR 540'),
-      _RideRow(
-        'R-23905',
-        'Bilal A',
-        'Car',
-        '8.9 km',
-        'In progress',
-        'PKR 1,420',
-      ),
-      _RideRow(
-        'R-23906',
-        'Fatima Z',
-        'Premium',
-        '12.1 km',
-        'Cancelled',
-        'PKR 0',
-      ),
-      _RideRow('R-23907', 'Hassan S', 'Car', '5.4 km', 'Completed', 'PKR 860'),
-    ];
+    final rides = recentRides
+        .map(
+          (ride) => _RideRow(
+            ride.id,
+            _displayName(usersById[ride.customerId], fallback: 'Customer'),
+            ride.vehicleType.label,
+            '${ride.distanceKm.toStringAsFixed(1)} km',
+            _statusLabel(ride.status),
+            'PKR ${NumberFormat.decimalPattern().format(ride.estimatedFare)}',
+          ),
+        )
+        .toList(growable: false);
 
-    final topDrivers = [
-      _DriverRow('Sara Imtiaz', 4.9, 92),
-      _DriverRow('Ali Raza', 4.8, 88),
-      _DriverRow('Noman Khan', 4.8, 85),
-      _DriverRow('Kiran Malik', 4.7, 81),
-    ];
+    final riders = usersById.values
+        .where((user) => user.role == UserRole.rider)
+        .take(6)
+        .toList(growable: false);
+
+    final customers = usersById.values
+        .where((user) => user.role == UserRole.customer)
+        .take(6)
+        .toList(growable: false);
 
     final ridesTable = Card(
       child: Padding(
@@ -778,21 +964,20 @@ class _BottomSection extends StatelessWidget {
                   DataColumn(label: Text('Status')),
                   DataColumn(label: Text('Fare')),
                 ],
-                rows:
-                    recentRides
-                        .map(
-                          (ride) => DataRow(
-                            cells: [
-                              DataCell(Text(ride.id)),
-                              DataCell(Text(ride.customer)),
-                              DataCell(Text(ride.type)),
-                              DataCell(Text(ride.distance)),
-                              DataCell(_StatusPill(status: ride.status)),
-                              DataCell(Text(ride.fare)),
-                            ],
-                          ),
-                        )
-                        .toList(),
+                rows: rides
+                    .map(
+                      (ride) => DataRow(
+                        cells: [
+                          DataCell(Text(ride.id)),
+                          DataCell(Text(ride.customer)),
+                          DataCell(Text(ride.type)),
+                          DataCell(Text(ride.distance)),
+                          DataCell(_StatusPill(status: ride.status)),
+                          DataCell(Text(ride.fare)),
+                        ],
+                      ),
+                    )
+                    .toList(),
               ),
             ),
           ],
@@ -800,35 +985,24 @@ class _BottomSection extends StatelessWidget {
       ),
     );
 
-    final driversCard = Card(
+    final usersCard = Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Top riders', style: theme.textTheme.titleMedium),
+            Text('Riders & customers', style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
-            ...topDrivers.map(
-              (driver) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: CircleAvatar(
-                  backgroundColor: theme.colorScheme.primary.withOpacity(0.15),
-                  child: Text(
-                    driver.name.substring(0, 1),
-                    style: TextStyle(color: theme.colorScheme.primary),
-                  ),
-                ),
-                title: Text(driver.name),
-                subtitle: Text('${driver.rides} rides this week'),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.star, size: 18, color: Color(0xFFF59E0B)),
-                    const SizedBox(width: 4),
-                    Text(driver.rating.toStringAsFixed(1)),
-                  ],
-                ),
-              ),
+            _UsersSection(
+              label: 'Riders',
+              users: riders,
+              emptyLabel: 'No riders found',
+            ),
+            const SizedBox(height: 14),
+            _UsersSection(
+              label: 'Customers',
+              users: customers,
+              emptyLabel: 'No customers found',
             ),
           ],
         ),
@@ -841,13 +1015,265 @@ class _BottomSection extends StatelessWidget {
         children: [
           Expanded(flex: 3, child: ridesTable),
           const SizedBox(width: 16),
-          Expanded(flex: 2, child: driversCard),
+          Expanded(flex: 2, child: usersCard),
         ],
       );
     }
 
     return Column(
-      children: [ridesTable, const SizedBox(height: 16), driversCard],
+      children: [ridesTable, const SizedBox(height: 16), usersCard],
+    );
+  }
+
+  static String _displayName(AppUser? user, {required String fallback}) {
+    if (user == null) return fallback;
+    if (user.fullName.trim().isNotEmpty) return user.fullName;
+    if (user.email.trim().isNotEmpty) return user.email;
+    return fallback;
+  }
+
+  static String _statusLabel(RideStatus status) {
+    return switch (status) {
+      RideStatus.requested => 'Requested',
+      RideStatus.booked => 'Booked',
+      RideStatus.arrived => 'Arrived',
+      RideStatus.inProgress => 'In progress',
+      RideStatus.completed => 'Completed',
+      RideStatus.cancelled => 'Cancelled',
+    };
+  }
+}
+
+
+class _RidesTable extends StatelessWidget {
+  final String title;
+  final String emptyMessage;
+  final List<RideRequest> rides;
+  final Map<String, AppUser> usersById;
+
+  const _RidesTable({
+    required this.title,
+    required this.emptyMessage,
+    required this.rides,
+    required this.usersById,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    if (rides.isEmpty) {
+      return _PlaceholderCard(
+        title: title,
+        message: emptyMessage,
+      );
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                columns: const [
+                  DataColumn(label: Text('Ride')),
+                  DataColumn(label: Text('Customer')),
+                  DataColumn(label: Text('Rider')),
+                  DataColumn(label: Text('Type')),
+                  DataColumn(label: Text('Status')),
+                  DataColumn(label: Text('Fare')),
+                  DataColumn(label: Text('Created')),
+                ],
+                rows: rides
+                    .map(
+                      (ride) => DataRow(
+                        cells: [
+                          DataCell(Text(ride.id)),
+                          DataCell(Text(_displayName(usersById[ride.customerId]))),
+                          DataCell(Text(_displayName(usersById[ride.riderId]))),
+                          DataCell(Text(ride.vehicleType.label)),
+                          DataCell(_StatusPill(status: _statusLabel(ride.status))),
+                          DataCell(Text(
+                            'PKR ${NumberFormat.decimalPattern().format(ride.estimatedFare)}',
+                          )),
+                          DataCell(Text(_formatDate(ride.createdAt))),
+                        ],
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _displayName(AppUser? user) {
+    if (user == null) return '--';
+    if (user.fullName.trim().isNotEmpty) return user.fullName;
+    if (user.email.trim().isNotEmpty) return user.email;
+    return '--';
+  }
+
+  static String _statusLabel(RideStatus status) {
+    return switch (status) {
+      RideStatus.requested => 'Requested',
+      RideStatus.booked => 'Booked',
+      RideStatus.arrived => 'Arrived',
+      RideStatus.inProgress => 'In progress',
+      RideStatus.completed => 'Completed',
+      RideStatus.cancelled => 'Cancelled',
+    };
+  }
+
+  static String _formatDate(DateTime? date) {
+    if (date == null) return '--';
+    return DateFormat('MMM d, h:mm a').format(date);
+  }
+}
+
+
+class _PaymentsSummary extends StatelessWidget {
+  final double total;
+  final int count;
+
+  const _PaymentsSummary({required this.total, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(
+                Icons.payments_outlined,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Total revenue', style: theme.textTheme.bodyMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'PKR ${NumberFormat.decimalPattern().format(total)}',
+                    style: theme.textTheme.headlineSmall,
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text('Completed rides', style: theme.textTheme.bodySmall),
+                const SizedBox(height: 4),
+                Text(
+                  count.toString(),
+                  style: theme.textTheme.titleLarge,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _UsersListCard extends StatelessWidget {
+  final String title;
+  final List<AppUser> users;
+  final String emptyLabel;
+
+  const _UsersListCard({
+    required this.title,
+    required this.users,
+    required this.emptyLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: theme.textTheme.titleMedium),
+            const SizedBox(height: 12),
+            if (users.isEmpty)
+              Text(emptyLabel, style: theme.textTheme.bodyMedium)
+            else
+              ...users.map(
+                (user) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(
+                    backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                    child: Text(
+                      _initial(user),
+                      style: TextStyle(color: theme.colorScheme.primary),
+                    ),
+                  ),
+                  title: Text(
+                    user.fullName.isNotEmpty ? user.fullName : user.email,
+                  ),
+                  subtitle: Text(user.email),
+                  trailing: _RoleChip(role: user.role),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _initial(AppUser user) {
+    final name = user.fullName.trim().isNotEmpty ? user.fullName : user.email;
+    return name.isNotEmpty ? name.substring(0, 1).toUpperCase() : '?';
+  }
+}
+
+class _PlaceholderCard extends StatelessWidget {
+  final String title;
+  final String message;
+
+  const _PlaceholderCard({required this.title, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(message, style: theme.textTheme.bodyMedium),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -933,10 +1359,83 @@ class _RideRow {
   );
 }
 
-class _DriverRow {
-  final String name;
-  final double rating;
-  final int rides;
+class _UsersSection extends StatelessWidget {
+  final String label;
+  final List<AppUser> users;
+  final String emptyLabel;
 
-  const _DriverRow(this.name, this.rating, this.rides);
+  const _UsersSection({
+    required this.label,
+    required this.users,
+    required this.emptyLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: theme.textTheme.titleSmall),
+        const SizedBox(height: 8),
+        if (users.isEmpty)
+          Text(emptyLabel, style: theme.textTheme.bodySmall)
+        else
+          ...users.map(
+            (user) => ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+                child: Text(
+                  _initial(user),
+                  style: TextStyle(color: theme.colorScheme.primary),
+                ),
+              ),
+              title: Text(
+                user.fullName.isNotEmpty ? user.fullName : user.email,
+              ),
+              subtitle: Text(user.email),
+              trailing: _RoleChip(role: user.role),
+            ),
+          ),
+      ],
+    );
+  }
+
+  static String _initial(AppUser user) {
+    final name = user.fullName.trim().isNotEmpty ? user.fullName : user.email;
+    return name.isNotEmpty ? name.substring(0, 1).toUpperCase() : '?';
+  }
+}
+
+class _RoleChip extends StatelessWidget {
+  final UserRole role;
+
+  const _RoleChip({required this.role});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = switch (role) {
+      UserRole.customer => theme.colorScheme.secondary,
+      UserRole.rider => theme.colorScheme.primary,
+      UserRole.admin => theme.colorScheme.tertiary,
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        role.label,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
 }

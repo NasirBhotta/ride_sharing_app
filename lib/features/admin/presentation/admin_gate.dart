@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:ride_sharing_app/features/admin/presentation/admin_login.dart';
 
 import '../../../shared/presentation/loading_screen.dart';
 import '../../auth/presentation/auth_landing_page.dart';
@@ -21,11 +22,12 @@ class AdminGate extends StatelessWidget {
 
         final user = snapshot.data;
         if (user == null) {
-          return const AuthLandingPage();
+          return const AdminLoginPage();
         }
 
-        final docRef =
-            FirebaseFirestore.instance.collection('users').doc(user.uid);
+        final docRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid);
 
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           stream: docRef.snapshots(),
@@ -80,10 +82,7 @@ class _AccessDenied extends StatelessWidget {
                   color: theme.colorScheme.error,
                 ),
                 const SizedBox(height: 12),
-                Text(
-                  'Access denied',
-                  style: theme.textTheme.headlineMedium,
-                ),
+                Text('Access denied', style: theme.textTheme.headlineMedium),
                 const SizedBox(height: 8),
                 Text(
                   'Your account does not have admin privileges.',
