@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:firebase_auth/firebase_auth.dart';
@@ -1083,8 +1082,8 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
                   ),
                 ),
                 DraggableGrowingSheet(
-                  minHeight: 200,
-                  maxHeight: MediaQuery.of(context).size.height * 0.65,
+                  // minHeight: 500,
+                  // maxHeight: MediaQuery.of(context).size.height * 0.65,
                   child: _buildBottomPanelContent(Theme.of(context)),
                 ),
               ],
@@ -1177,26 +1176,27 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
           ),
         ],
 
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  _dropoffLatLng != null
-                      ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
-                      : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
-                ),
-                // FIX #10: Removed ?50 bug ? fare is already correct
-                Text(
-                  'Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
-                  style: theme.textTheme.titleMedium,
-                ),
-              ],
+        if (!_hasRide && _dropoffCtrl.text.trim().isNotEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    _dropoffLatLng != null
+                        ? 'Distance: ${_distKm.toStringAsFixed(1)} km'
+                        : 'Est. distance: ~${_distKm.toStringAsFixed(1)} km',
+                  ),
+                  // FIX #10: Removed ?50 bug ? fare is already correct
+                  Text(
+                    'Est. PKR ${_fare(_vehicle).toStringAsFixed(2)}',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
 
         if (_hasRide) ...[
           const SizedBox(height: 16),
@@ -1283,62 +1283,30 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
   }
 }
 
-class DraggableGrowingSheet extends StatefulWidget {
+class DraggableGrowingSheet extends StatelessWidget {
   final Widget child;
-  final double minHeight;
-  final double maxHeight;
 
-  const DraggableGrowingSheet({
-    super.key,
-    required this.child,
-    this.minHeight = 100,
-    this.maxHeight = 600,
-  });
-
-  @override
-  State<DraggableGrowingSheet> createState() => _DraggableGrowingSheetState();
-}
-
-class _DraggableGrowingSheetState extends State<DraggableGrowingSheet> {
-  double sheetHeight = 200; // initial height
+  const DraggableGrowingSheet({super.key, required this.child});
 
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      left: 16,
-      right: 16,
-      bottom: 16,
-      child: GestureDetector(
-        onVerticalDragUpdate: (details) {
-          setState(() {
-            sheetHeight -= details.delta.dy; // drag up → increase height
-            sheetHeight = sheetHeight.clamp(widget.minHeight, widget.maxHeight);
-          });
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 100),
-          height: sheetHeight,
+    return DraggableScrollableSheet(
+      initialChildSize: 0.4,
+      minChildSize: 0.4,
+      maxChildSize: 0.65,
+      builder: (context, scrollController) {
+        return Container(
           decoration: BoxDecoration(
             color: Theme.of(context).scaffoldBackgroundColor,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.12),
-                blurRadius: 16,
-                offset: const Offset(0, -4),
-              ),
-            ],
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            boxShadow: [BoxShadow(blurRadius: 10, color: Colors.black26)],
           ),
           child: SingleChildScrollView(
-            physics:
-                sheetHeight >= widget.maxHeight
-                    ? const ClampingScrollPhysics()
-                    : const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            child: widget.child,
+            controller: scrollController,
+            child: Padding(padding: const EdgeInsets.all(16), child: child),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

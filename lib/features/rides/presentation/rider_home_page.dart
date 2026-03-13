@@ -933,12 +933,11 @@ class _RiderHomePageState extends State<RiderHomePage>
                   ),
                 ),
                 DraggableScrollableSheet(
-                  initialChildSize: 0.3,
-                  minChildSize: 0.2,
-                  maxChildSize: 0.85,
+                  initialChildSize: 0.4,
+                  minChildSize: 0.4,
+                  maxChildSize: 0.65,
                   builder: (context, scrollController) {
                     return Container(
-                      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                       decoration: BoxDecoration(
                         color: theme.scaffoldBackgroundColor,
                         borderRadius: BorderRadius.circular(20),
