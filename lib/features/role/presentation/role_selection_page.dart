@@ -84,6 +84,15 @@ class _RoleSelectionPageState extends State<RoleSelectionPage> {
                   label: const Text('Continue as Rider'),
                 ),
               ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _isSaving ? null : () => _saveRole(UserRole.admin),
+                  icon: const Icon(Icons.admin_panel_settings),
+                  label: const Text('Continue as Admin'),
+                ),
+              ),
             ],
           ),
         ),

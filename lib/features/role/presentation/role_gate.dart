@@ -6,6 +6,7 @@ import '../../../shared/presentation/loading_screen.dart';
 import '../../auth/presentation/auth_landing_page.dart';
 import '../../onboarding/presentation/customer_onboarding_page.dart';
 import '../../onboarding/presentation/rider_onboarding_page.dart';
+import '../../admin/presentation/admin_dashboard_page.dart';
 import '../../rides/presentation/customer_home_page.dart';
 import '../../rides/presentation/rider_home_page.dart';
 import '../domain/user_role.dart';
@@ -36,6 +37,10 @@ class RoleGate extends StatelessWidget {
 
         if (role == null) {
           return const RoleSelectionPage();
+        }
+
+        if (role == UserRole.admin) {
+          return const AdminDashboardPage();
         }
 
         if (!onboardingDone) {

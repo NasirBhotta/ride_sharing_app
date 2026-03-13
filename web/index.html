@@ -33,6 +33,26 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    var serviceWorkerVersion = null;
+  </script>
+  <script src="flutter.js" defer></script>
+  <script>
+    window.addEventListener('load', function () {
+      if (typeof _flutter === 'undefined' || !_flutter.loader) {
+        console.error('Flutter loader not found. Check flutter.js loading.');
+        return;
+      }
+      _flutter.loader.load({
+        serviceWorker: { serviceWorkerVersion: serviceWorkerVersion },
+        config: { renderer: "html" },
+        onEntrypointLoaded: function (engineInitializer) {
+          engineInitializer.initializeEngine().then(function (appRunner) {
+            appRunner.runApp();
+          });
+        }
+      });
+    });
+  </script>
 </body>
 </html>

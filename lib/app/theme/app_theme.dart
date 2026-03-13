@@ -275,6 +275,7 @@ class AppTheme {
     final base = ThemeData(
       brightness: Brightness.light,
       useMaterial3: true,
+      fontFamily: 'Arial',
       colorScheme: ColorScheme.fromSeed(
         seedColor: _brand,
         brightness: Brightness.light,
@@ -303,6 +304,7 @@ class AppTheme {
     final base = ThemeData(
       brightness: Brightness.dark,
       useMaterial3: true,
+      fontFamily: 'Arial',
       colorScheme: ColorScheme.fromSeed(
         seedColor: _brand,
         brightness: Brightness.dark,
