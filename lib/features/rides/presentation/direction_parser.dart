@@ -9,6 +9,20 @@ import 'navigation_hud.dart';
 class DirectionsParser {
   DirectionsParser._();
 
+  static String? errorMessage(String jsonBody) {
+    try {
+      final Map<String, dynamic> data = json.decode(jsonBody);
+      final status = data['status'] as String?;
+      if (status == null || status == 'OK') return null;
+      final message = data['error_message'] as String?;
+      return message == null || message.trim().isEmpty
+          ? 'Directions API returned $status.'
+          : 'Directions API returned $status: $message';
+    } catch (_) {
+      return null;
+    }
+  }
+
   static List<NavStep> parse(String jsonBody) {
     final Map<String, dynamic> data = json.decode(jsonBody);
     final routes = data['routes'] as List?;

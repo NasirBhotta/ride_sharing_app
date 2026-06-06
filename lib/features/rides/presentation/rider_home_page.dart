@@ -216,9 +216,14 @@ class _RiderHomePageState extends State<RiderHomePage>
   // ── Route ─────────────────────────────────────────────────────────
 
   Future<void> _updateRoute(RideRequest ride, {bool force = false}) async {
-    if (ride.status != _lastRouteStatus || force) {
-      // proceed with re-fetch
-    } else {
+    final isRouteStatus =
+        ride.status == RideStatus.booked ||
+        ride.status == RideStatus.inProgress;
+    final hasLoadedRoute =
+        _routeInfo != null && _routeState == _RouteState.success;
+    if (!force &&
+        ride.status == _lastRouteStatus &&
+        (!isRouteStatus || hasLoadedRoute)) {
       if (mounted) setState(() {});
       return;
     }
@@ -272,6 +277,8 @@ class _RiderHomePageState extends State<RiderHomePage>
           _routeState = _RouteState.missingCoords;
           _routeError = 'Status ${ride.status.name}: coords not yet available.';
           _polylines = {};
+          _routeInfo = null;
+          _routePoints = [];
           _lastRouteStatus = ride.status;
         });
       return;
@@ -298,6 +305,8 @@ class _RiderHomePageState extends State<RiderHomePage>
           _routeState = _RouteState.apiError;
           _routeError = 'HTTP ${res.statusCode}';
           _polylines = {};
+          _routeInfo = null;
+          _routePoints = [];
           _lastRouteStatus = ride.status;
         });
         return;
@@ -305,9 +314,15 @@ class _RiderHomePageState extends State<RiderHomePage>
 
       final info = RouteInfo.fromJson(res.body);
       if (info == null || info.steps.isEmpty) {
+        final routeError =
+            DirectionsParser.errorMessage(res.body) ??
+            'No route returned by Directions API.';
         setState(() {
           _routeState = _RouteState.emptyResult;
+          _routeError = routeError;
           _polylines = {};
+          _routeInfo = null;
+          _routePoints = [];
           _lastRouteStatus = ride.status;
         });
         return;
@@ -341,6 +356,8 @@ class _RiderHomePageState extends State<RiderHomePage>
         _routeState = _RouteState.exception;
         _routeError = e.toString();
         _polylines = {};
+        _routeInfo = null;
+        _routePoints = [];
         _lastRouteStatus = ride.status;
       });
     }
