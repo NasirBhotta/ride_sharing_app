@@ -476,7 +476,7 @@ class _RiderHomePageState extends State<RiderHomePage>
 
   // ── Distance helpers ──────────────────────────────────────────────
 
-  double _rad(double d) => d * pi / 180;
+  double _rad(double d) => d * pi / 180; //
 
   double _haversineKm(LatLng a, LatLng b) {
     const r = 6371.0;
