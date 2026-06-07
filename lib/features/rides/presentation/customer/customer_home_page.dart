@@ -13,15 +13,15 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:ride_sharing_app/features/rides/presentation/direction_parser.dart';
 
-import '../../../app/config/maps_config.dart';
-import '../../auth/data/auth_repository.dart';
-import '../data/ride_repository.dart';
-import '../domain/ride_message.dart';
-import '../domain/ride_request.dart';
-import '../domain/vehicle_type.dart';
-import 'navigation_hud.dart';
-import 'widgets/ride_location_fields.dart';
-import 'widgets/vehicle_option_card.dart';
+import '../../../../app/config/maps_config.dart';
+import '../../../auth/data/auth_repository.dart';
+import '../../data/ride_repository.dart';
+import '../../domain/ride_message.dart';
+import '../../domain/ride_request.dart';
+import '../../domain/vehicle_type.dart';
+import '../navigation_hud.dart';
+import '../widgets/ride_location_fields.dart';
+import '../widgets/vehicle_option_card.dart';
 
 enum _RouteState {
   idle,

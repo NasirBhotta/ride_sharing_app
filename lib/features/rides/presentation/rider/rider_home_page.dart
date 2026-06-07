@@ -12,13 +12,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:ride_sharing_app/features/rides/presentation/direction_parser.dart';
 
-import '../../../app/config/maps_config.dart';
-import '../../auth/data/auth_repository.dart';
-import '../data/ride_repository.dart';
-import '../domain/ride_message.dart';
-import '../domain/ride_request.dart';
-import '../domain/vehicle_type.dart';
-import 'navigation_hud.dart';
+import '../../../../app/config/maps_config.dart';
+import '../../../auth/data/auth_repository.dart';
+import '../../data/ride_repository.dart';
+import '../../domain/ride_message.dart';
+import '../../domain/ride_request.dart';
+import '../../domain/vehicle_type.dart';
+import '../navigation_hud.dart';
 
 part 'rider_home_page_route_state.dart';
 part 'rider_home_page_widgets.dart';

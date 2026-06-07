@@ -7,8 +7,8 @@ import '../../auth/presentation/auth_landing_page.dart';
 import '../../onboarding/presentation/customer_onboarding_page.dart';
 import '../../onboarding/presentation/rider_onboarding_page.dart';
 import '../../admin/presentation/admin_dashboard_page.dart';
-import '../../rides/presentation/customer_home_page.dart';
-import '../../rides/presentation/rider_home_page.dart';
+import '../../rides/presentation/customer/customer_home_page.dart';
+import '../../rides/presentation/rider/rider_home_page.dart';
 import '../domain/user_role.dart';
 import 'role_selection_page.dart';
 
