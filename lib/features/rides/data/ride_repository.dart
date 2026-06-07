@@ -1,13 +1,24 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'dart:typed_data';
 
 import '../domain/ride_message.dart';
 import '../domain/ride_request.dart';
+import 'encryption_service.dart';
+import 'ride_key_manager.dart';
 
 class RideRepository {
-  RideRepository({FirebaseFirestore? firestore})
-    : _firestore = firestore ?? FirebaseFirestore.instance;
+  RideRepository({
+    FirebaseFirestore? firestore,
+    EncryptionService? encryptionService,
+    RideKeyManager? keyManager,
+  })  : _firestore = firestore ?? FirebaseFirestore.instance,
+        _encryptionService = encryptionService ?? EncryptionService(),
+        _keyManager = keyManager ?? RideKeyManager();
 
   final FirebaseFirestore _firestore;
+  final EncryptionService _encryptionService;
+  final RideKeyManager _keyManager;
 
   CollectionReference<Map<String, dynamic>> get _rides =>
       _firestore.collection('rides');
@@ -46,6 +57,9 @@ class RideRepository {
   Future<void> acceptRide({
     required String rideId,
     required String riderId,
+    required String customerId,
+    required Uint8List riderMasterKey,
+    required Uint8List customerMasterKey,
     double? riderLat,
     double? riderLng,
   }) async {
@@ -72,6 +86,18 @@ class RideRepository {
       }
       transaction.update(ref, update);
     });
+
+    // After ride is booked, initialize encryption keys
+    await _keyManager.initializeRideEncryption(
+      rideId: rideId,
+      riderId: riderId,
+      customerId: customerId,
+      riderMasterKey: riderMasterKey,
+      customerMasterKey: customerMasterKey,
+    );
+
+    // Subscribe to notification topic for this ride
+    await FirebaseMessaging.instance.subscribeToTopic('ride_$rideId');
   }
 
   Future<void> markArrived(String rideId) async {
@@ -93,6 +119,10 @@ class RideRepository {
       'status': RideStatus.completed.name,
       'completedAt': FieldValue.serverTimestamp(),
     });
+    // Clear key from cache when ride ends
+    _keyManager.clearRideKeyFromCache(rideId);
+    // Unsubscribe from topic
+    await FirebaseMessaging.instance.unsubscribeFromTopic('ride_$rideId');
   }
 
   Future<void> updateCustomerLocation({
@@ -150,11 +180,15 @@ class RideRepository {
     required String senderId,
     required String senderRole,
     required String text,
+    required Uint8List rideKey,
   }) async {
+    // Encrypt the message text
+    final encryptedText = _encryptionService.encrypt(text, rideKey);
+
     await _rides.doc(rideId).collection('messages').add({
       'senderId': senderId,
       'senderRole': senderRole,
-      'text': text,
+      'encryptedText': encryptedText,
       'createdAt': FieldValue.serverTimestamp(),
     });
   }

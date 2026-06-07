@@ -26,6 +26,9 @@ class RideRequest {
     required this.riderLng,
     required this.searchRadiusKm,
     required this.maxRadiusKm,
+    this.riderEncryptedRideKey,
+    this.customerEncryptedRideKey,
+    this.messageEncryptionKeyId,
   });
 
   final String id;
@@ -48,6 +51,9 @@ class RideRequest {
   final double? riderLng;
   final double searchRadiusKm;
   final double maxRadiusKm;
+  final String? riderEncryptedRideKey;
+  final String? customerEncryptedRideKey;
+  final String? messageEncryptionKeyId;
 
   Map<String, dynamic> toFirestore() {
     return {
@@ -70,6 +76,9 @@ class RideRequest {
       'searchRadiusKm': searchRadiusKm,
       'maxRadiusKm': maxRadiusKm,
       'createdAt': FieldValue.serverTimestamp(),
+      if (riderEncryptedRideKey != null) 'riderEncryptedRideKey': riderEncryptedRideKey,
+      if (customerEncryptedRideKey != null) 'customerEncryptedRideKey': customerEncryptedRideKey,
+      if (messageEncryptionKeyId != null) 'messageEncryptionKeyId': messageEncryptionKeyId,
     };
   }
 
@@ -106,6 +115,9 @@ class RideRequest {
       riderLng: (data['riderLng'] as num?)?.toDouble(),
       searchRadiusKm: (data['searchRadiusKm'] as num?)?.toDouble() ?? 2.0,
       maxRadiusKm: (data['maxRadiusKm'] as num?)?.toDouble() ?? 8.0,
+      riderEncryptedRideKey: data['riderEncryptedRideKey'] as String?,
+      customerEncryptedRideKey: data['customerEncryptedRideKey'] as String?,
+      messageEncryptionKeyId: data['messageEncryptionKeyId'] as String?,
     );
   }
 }

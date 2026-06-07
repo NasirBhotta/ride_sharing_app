@@ -16,6 +16,8 @@ import 'package:ride_sharing_app/features/rides/presentation/direction_parser.da
 import '../../../../app/config/maps_config.dart';
 import '../../../auth/data/auth_repository.dart';
 import '../../data/ride_repository.dart';
+import '../../data/encryption_service.dart';
+import '../../data/ride_key_manager.dart';
 import '../../domain/ride_message.dart';
 import '../../domain/ride_request.dart';
 import '../../domain/vehicle_type.dart';

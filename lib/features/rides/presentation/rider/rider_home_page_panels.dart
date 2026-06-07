@@ -219,38 +219,7 @@ extension _RiderHomePagePanels on _RiderHomePageState {
                   itemCount: msgs.length,
                   itemBuilder: (_, i) {
                     final msg = msgs[i];
-                    final isRider = msg.senderRole == 'rider';
-                    return Align(
-                      alignment:
-                          isRider
-                              ? Alignment.centerRight
-                              : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        constraints: BoxConstraints(
-                          maxWidth: MediaQuery.of(ctx).size.width * 0.65,
-                        ),
-                        decoration: BoxDecoration(
-                          color:
-                              isRider
-                                  ? theme.colorScheme.primary.withOpacity(0.15)
-                                  : (isDark
-                                      ? const Color(0xFF252A3A)
-                                      : const Color(0xFFECEFF7)),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          msg.text,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
-                    );
+                    return _buildRiderMessageBubble(msg);
                   },
                 );
               },
@@ -316,6 +285,64 @@ extension _RiderHomePagePanels on _RiderHomePageState {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildRiderMessageBubble(RideMessage message) {
+    final encryptionService = EncryptionService();
+    final keyManager = RideKeyManager();
+    final user = FirebaseAuth.instance.currentUser;
+    final rideId = _activeRideId;
+    final isRider = message.senderRole == 'rider';
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+
+    if (user == null || rideId == null) {
+      return Align(
+        alignment: isRider ? Alignment.centerRight : Alignment.centerLeft,
+        child: _messageBubble('[Error decrypting]', isRider, isDark, theme),
+      );
+    }
+
+    final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
+
+    return FutureBuilder<String>(
+      future: keyManager
+          .getRideMessageKey(
+            rideId: rideId,
+            userId: user.uid,
+            userRole: 'rider',
+            masterKey: masterKey,
+          )
+          .then((rideKey) => encryptionService.decrypt(message.encryptedText, rideKey)),
+      builder: (ctx, snap) {
+        String displayText = '[Decrypting...]';
+        if (snap.connectionState == ConnectionState.done) {
+          displayText = snap.hasError ? '[Decryption failed]' : (snap.data ?? '[Unknown error]');
+        }
+        return Align(
+          alignment: isRider ? Alignment.centerRight : Alignment.centerLeft,
+          child: _messageBubble(displayText, isRider, isDark, theme),
+        );
+      },
+    );
+  }
+
+  Widget _messageBubble(String text, bool isRider, bool isDark, ThemeData theme) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.65),
+      decoration: BoxDecoration(
+        color: isRider
+            ? theme.colorScheme.primary.withOpacity(0.15)
+            : (isDark ? const Color(0xFF252A3A) : const Color(0xFFECEFF7)),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.bodySmall?.copyWith(fontSize: 13),
+      ),
     );
   }
 

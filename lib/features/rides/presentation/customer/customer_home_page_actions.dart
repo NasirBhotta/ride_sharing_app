@@ -258,16 +258,47 @@ extension _CustomerHomePageActions on _CustomerHomePageState {
   Future<void> _sendMessage() async {
     final id = _activeRideId;
     final user = FirebaseAuth.instance.currentUser;
-    if (id == null || user == null) return;
+    final ride = _activeRide;
+    if (id == null || user == null || ride == null) return;
+
     final text = _messageCtrl.text.trim();
     if (text.isEmpty) return;
-    _messageCtrl.clear();
-    await _rideRepo.sendMessage(
-      rideId: id,
-      senderId: user.uid,
-      senderRole: 'customer',
-      text: text,
-    );
+
+    try {
+      _messageCtrl.clear();
+
+      // Get the ride key using the key manager
+      // For now, we use a simple master key derived from the user ID
+      // In production, this should be properly managed and cached
+      final keyManager = _rideRepo is RideRepository ? _rideRepo : null;
+
+      if (keyManager == null) return;
+
+      // Derive master key from user info (simplified approach)
+      // In production: use stored encrypted master key or biometric auth
+      final encryptionService = EncryptionService();
+      final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
+
+      final rideKey = await RideKeyManager().getRideMessageKey(
+        rideId: id,
+        userId: user.uid,
+        userRole: 'customer',
+        masterKey: masterKey,
+      );
+
+      await _rideRepo.sendMessage(
+        rideId: id,
+        senderId: user.uid,
+        senderRole: 'customer',
+        text: text,
+        rideKey: rideKey,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to send message: $e')));
+    }
   }
 
   // ── Getters ───────────────────────────────────────────────────────

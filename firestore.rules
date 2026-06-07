@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow users to read/write their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+
+    // Rides collection
+    match /rides/{rideId} {
+      // Users can read rides they're involved in (as customer or rider)
+      allow read: if request.auth.uid == resource.data.customerId ||
+                      request.auth.uid == resource.data.riderId;
+
+      // Users can create new rides (customers)
+      allow create: if request.auth.uid == request.resource.data.customerId;
+
+      // Allow updates to ride status by participants
+      allow update: if request.auth.uid == resource.data.customerId ||
+                        request.auth.uid == resource.data.riderId;
+
+      // Messages subcollection - encrypted messages
+      match /messages/{messageId} {
+        // Only ride participants can read messages
+        allow read: if request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.customerId ||
+                        request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.riderId;
+
+        // Only ride participants can create (send) messages
+        allow create: if request.auth.uid == request.resource.data.senderId &&
+                        (request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.customerId ||
+                         request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.riderId);
+
+        // Messages cannot be modified or deleted after creation
+        allow update, delete: if false;
+      }
+    }
+
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

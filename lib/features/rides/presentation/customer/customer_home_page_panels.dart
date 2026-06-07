@@ -120,12 +120,7 @@ extension _CustomerHomePagePanels on _CustomerHomePageState {
                 return ListView.builder(
                   reverse: true,
                   itemCount: msgs.length,
-                  itemBuilder:
-                      (_, i) => ListTile(
-                        dense: true,
-                        title: Text(msgs[i].text),
-                        subtitle: Text(msgs[i].senderRole),
-                      ),
+                  itemBuilder: (_, i) => _buildDecryptedMessage(msgs[i]),
                 );
               },
             ),
@@ -186,6 +181,57 @@ extension _CustomerHomePagePanels on _CustomerHomePageState {
               ),
             ),
       ],
+    );
+  }
+
+  Widget _buildDecryptedMessage(RideMessage message) {
+    final encryptionService = EncryptionService();
+    final keyManager = RideKeyManager();
+    final user = FirebaseAuth.instance.currentUser;
+    final rideId = _activeRideId;
+
+    if (user == null || rideId == null) {
+      return ListTile(
+        dense: true,
+        title: const Text('[Error decrypting]'),
+        subtitle: Text(message.senderRole),
+      );
+    }
+
+    // Derive master key from user ID (must match encryption logic)
+    final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
+
+    return FutureBuilder<String>(
+      future: keyManager
+          .getRideMessageKey(
+            rideId: rideId,
+            userId: user.uid,
+            userRole: 'customer',
+            masterKey: masterKey,
+          )
+          .then((rideKey) => encryptionService.decrypt(message.encryptedText, rideKey)),
+      builder: (ctx, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return ListTile(
+            dense: true,
+            title: const Text('[Decrypting...]'),
+            subtitle: Text(message.senderRole),
+          );
+        }
+        if (snap.hasError) {
+          return ListTile(
+            dense: true,
+            title: const Text('[Decryption failed]'),
+            subtitle: Text(message.senderRole),
+          );
+        }
+        final decryptedText = snap.data ?? '[Unknown error]';
+        return ListTile(
+          dense: true,
+          title: Text(decryptedText),
+          subtitle: Text(message.senderRole),
+        );
+      },
     );
   }
 }
