@@ -6,7 +6,9 @@ import '../../role/presentation/role_gate.dart';
 import 'auth_landing_page.dart';
 
 class AuthGate extends StatelessWidget {
-  const AuthGate({super.key});
+  const AuthGate({super.key, this.showGetStartedCopy = false});
+
+  final bool showGetStartedCopy;
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +20,7 @@ class AuthGate extends StatelessWidget {
         }
 
         if (snapshot.data == null) {
-          return const AuthLandingPage();
+          return AuthLandingPage(showGetStartedCopy: showGetStartedCopy);
         }
 
         return const RoleGate();

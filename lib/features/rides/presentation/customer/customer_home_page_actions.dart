@@ -1,6 +1,15 @@
 part of 'customer_home_page.dart';
 
 extension _CustomerHomePageActions on _CustomerHomePageState {
+  void _openChat() {
+    final id = _activeRideId;
+    if (id == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RideChatScreen(rideId: id),
+      ),
+    );
+  }
   double _rad(double d) => d * pi / 180;
 
   double _haversineKm(LatLng a, LatLng b) {
@@ -51,17 +60,18 @@ extension _CustomerHomePageActions on _CustomerHomePageState {
             unawaited(_updateRoute(ride));
             _applyProgress(ride);
 
-            if (ride.status == RideStatus.booked &&
-                ride.status != prev &&
-                _currentLoc != null &&
-                ride.riderLat != null &&
-                ride.riderLng != null) {
-              unawaited(
-                _fitBounds(
-                  _currentLoc!,
-                  LatLng(ride.riderLat!, ride.riderLng!),
-                ),
-              );
+            if (ride.status == RideStatus.booked && ride.status != prev) {
+              unawaited(NotificationService().subscribeToRideTopic(id));
+              if (_currentLoc != null &&
+                  ride.riderLat != null &&
+                  ride.riderLng != null) {
+                unawaited(
+                  _fitBounds(
+                    _currentLoc!,
+                    LatLng(ride.riderLat!, ride.riderLng!),
+                  ),
+                );
+              }
             }
 
             if (ride.status == RideStatus.completed ||
@@ -169,6 +179,7 @@ extension _CustomerHomePageActions on _CustomerHomePageState {
     }
     setState(() => _isRequesting = true);
     try {
+      final customerInfo = await _userRepo.getCustomerSnapshot(user.uid);
       final req = RideRequest(
         id: '',
         customerId: user.uid,
@@ -190,6 +201,7 @@ extension _CustomerHomePageActions on _CustomerHomePageState {
         riderLng: null,
         searchRadiusKm: _CustomerHomePageState._initialRadiusKm,
         maxRadiusKm: _CustomerHomePageState._maxRadiusKm,
+        customerInfo: customerInfo,
       );
       final id = await _rideRepo.requestRide(req);
       if (!mounted) return;
@@ -252,52 +264,6 @@ extension _CustomerHomePageActions on _CustomerHomePageState {
       ).showSnackBar(SnackBar(content: Text('Could not cancel: $e')));
     } finally {
       if (mounted) setState(() => _isCancelling = false);
-    }
-  }
-
-  Future<void> _sendMessage() async {
-    final id = _activeRideId;
-    final user = FirebaseAuth.instance.currentUser;
-    final ride = _activeRide;
-    if (id == null || user == null || ride == null) return;
-
-    final text = _messageCtrl.text.trim();
-    if (text.isEmpty) return;
-
-    try {
-      _messageCtrl.clear();
-
-      // Get the ride key using the key manager
-      // For now, we use a simple master key derived from the user ID
-      // In production, this should be properly managed and cached
-      final keyManager = _rideRepo is RideRepository ? _rideRepo : null;
-
-      if (keyManager == null) return;
-
-      // Derive master key from user info (simplified approach)
-      // In production: use stored encrypted master key or biometric auth
-      final encryptionService = EncryptionService();
-      final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
-
-      final rideKey = await RideKeyManager().getRideMessageKey(
-        rideId: id,
-        userId: user.uid,
-        userRole: 'customer',
-        masterKey: masterKey,
-      );
-
-      await _rideRepo.sendMessage(
-        rideId: id,
-        senderId: user.uid,
-        senderRole: 'customer',
-        text: text,
-        rideKey: rideKey,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to send message: $e')));
     }
   }
 

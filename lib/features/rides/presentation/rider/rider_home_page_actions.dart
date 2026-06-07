@@ -30,12 +30,15 @@ extension _RiderHomePageActions on _RiderHomePageState {
       final customerMasterKey =
           encryptionService.deriveKeyFromPassword(rideDoc.customerId);
 
+      final riderInfo = await _userRepo.getRiderSnapshot(riderId);
+
       await _rideRepo.acceptRide(
         rideId: id,
         riderId: riderId,
         customerId: rideDoc.customerId,
         riderMasterKey: riderMasterKey,
         customerMasterKey: customerMasterKey,
+        riderInfo: riderInfo,
         riderLat: ll?.latitude,
         riderLng: ll?.longitude,
       );
@@ -68,42 +71,14 @@ extension _RiderHomePageActions on _RiderHomePageState {
     if (_activeRideId != null) await _rideRepo.completeRide(_activeRideId!);
   }
 
-  Future<void> _sendMessage() async {
+  void _openChat() {
     final id = _activeRideId;
-    final user = FirebaseAuth.instance.currentUser;
-    final ride = _activeRide;
-    if (id == null || user == null || ride == null) return;
-
-    final text = _messageCtrl.text.trim();
-    if (text.isEmpty) return;
-
-    try {
-      _messageCtrl.clear();
-
-      // Derive master key from user ID (simplified approach)
-      final encryptionService = EncryptionService();
-      final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
-
-      final rideKey = await RideKeyManager().getRideMessageKey(
-        rideId: id,
-        userId: user.uid,
-        userRole: 'rider',
-        masterKey: masterKey,
-      );
-
-      await _rideRepo.sendMessage(
-        rideId: id,
-        senderId: user.uid,
-        senderRole: 'rider',
-        text: text,
-        rideKey: rideKey,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to send message: $e')));
-    }
+    if (id == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RideChatScreen(rideId: id),
+      ),
+    );
   }
 
   void _watchRide(String id) {

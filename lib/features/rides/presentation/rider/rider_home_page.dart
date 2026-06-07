@@ -14,11 +14,13 @@ import 'package:ride_sharing_app/features/rides/presentation/direction_parser.da
 
 import '../../../../app/config/maps_config.dart';
 import '../../../auth/data/auth_repository.dart';
-import '../../data/ride_repository.dart';
+import '../../../auth/data/user_repository.dart';
 import '../../data/encryption_service.dart';
-import '../../data/ride_key_manager.dart';
-import '../../domain/ride_message.dart';
+import '../../data/ride_repository.dart';
+import '../../domain/ride_participant_info.dart';
 import '../../domain/ride_request.dart';
+import '../chat/ride_chat_screen.dart';
+import '../widgets/participant_info_card.dart';
 import '../../domain/vehicle_type.dart';
 import '../navigation_hud.dart';
 
@@ -42,7 +44,7 @@ class _RiderHomePageState extends State<RiderHomePage>
     with SingleTickerProviderStateMixin {
   final _rideRepo = RideRepository();
   final _authRepo = AuthRepository();
-  final _messageCtrl = TextEditingController();
+  final _userRepo = UserRepository();
 
   // FIX #12: TTS for voice navigation
   final FlutterTts _tts = FlutterTts();
@@ -133,7 +135,6 @@ class _RiderHomePageState extends State<RiderHomePage>
 
   @override
   void dispose() {
-    _messageCtrl.dispose();
     _mapCtrl?.dispose();
     _rideSub?.cancel();
     _posSub?.cancel();

@@ -105,36 +105,26 @@ extension _CustomerHomePagePanels on _CustomerHomePageState {
             ),
           ),
 
-        if (_hasRide) ...[
-          const SizedBox(height: 16),
-          Text('Messages', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 180,
-            child: StreamBuilder<List<RideMessage>>(
-              stream: _rideRepo.watchMessages(_activeRideId!),
-              builder: (ctx, snap) {
-                final msgs = snap.data ?? [];
-                if (msgs.isEmpty)
-                  return const Center(child: Text('No messages yet.'));
-                return ListView.builder(
-                  reverse: true,
-                  itemCount: msgs.length,
-                  itemBuilder: (_, i) => _buildDecryptedMessage(msgs[i]),
-                );
-              },
-            ),
+        if (_hasRide && _activeRide?.riderInfo != null) ...[
+          const SizedBox(height: 12),
+          ParticipantInfoCard(
+            info: _activeRide!.riderInfo!,
+            roleLabel: 'Your driver',
           ),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _messageCtrl,
-                  decoration: const InputDecoration(hintText: 'Message driver'),
-                ),
+        ],
+
+        if (_hasRide && _activeRide?.canMessage == true) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _openChat,
+            icon: const Icon(Icons.chat_bubble_outline_rounded),
+            label: const Text('Open messages'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(48),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
-              IconButton(onPressed: _sendMessage, icon: const Icon(Icons.send)),
-            ],
+            ),
           ),
         ],
 
@@ -184,54 +174,4 @@ extension _CustomerHomePagePanels on _CustomerHomePageState {
     );
   }
 
-  Widget _buildDecryptedMessage(RideMessage message) {
-    final encryptionService = EncryptionService();
-    final keyManager = RideKeyManager();
-    final user = FirebaseAuth.instance.currentUser;
-    final rideId = _activeRideId;
-
-    if (user == null || rideId == null) {
-      return ListTile(
-        dense: true,
-        title: const Text('[Error decrypting]'),
-        subtitle: Text(message.senderRole),
-      );
-    }
-
-    // Derive master key from user ID (must match encryption logic)
-    final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
-
-    return FutureBuilder<String>(
-      future: keyManager
-          .getRideMessageKey(
-            rideId: rideId,
-            userId: user.uid,
-            userRole: 'customer',
-            masterKey: masterKey,
-          )
-          .then((rideKey) => encryptionService.decrypt(message.encryptedText, rideKey)),
-      builder: (ctx, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return ListTile(
-            dense: true,
-            title: const Text('[Decrypting...]'),
-            subtitle: Text(message.senderRole),
-          );
-        }
-        if (snap.hasError) {
-          return ListTile(
-            dense: true,
-            title: const Text('[Decryption failed]'),
-            subtitle: Text(message.senderRole),
-          );
-        }
-        final decryptedText = snap.data ?? '[Unknown error]';
-        return ListTile(
-          dense: true,
-          title: Text(decryptedText),
-          subtitle: Text(message.senderRole),
-        );
-      },
-    );
-  }
 }

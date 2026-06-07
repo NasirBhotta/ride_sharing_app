@@ -3,6 +3,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:typed_data';
 
 import '../domain/ride_message.dart';
+import '../domain/ride_participant_info.dart';
 import '../domain/ride_request.dart';
 import 'encryption_service.dart';
 import 'ride_key_manager.dart';
@@ -60,6 +61,7 @@ class RideRepository {
     required String customerId,
     required Uint8List riderMasterKey,
     required Uint8List customerMasterKey,
+    required RideParticipantInfo riderInfo,
     double? riderLat,
     double? riderLng,
   }) async {
@@ -77,6 +79,7 @@ class RideRepository {
       final update = <String, dynamic>{
         'status': RideStatus.booked.name,
         'riderId': riderId,
+        'riderInfo': riderInfo.toFirestore(),
         'bookedAt': FieldValue.serverTimestamp(),
       };
       if (riderLat != null && riderLng != null) {
@@ -96,7 +99,6 @@ class RideRepository {
       customerMasterKey: customerMasterKey,
     );
 
-    // Subscribe to notification topic for this ride
     await FirebaseMessaging.instance.subscribeToTopic('ride_$rideId');
   }
 
@@ -121,7 +123,6 @@ class RideRepository {
     });
     // Clear key from cache when ride ends
     _keyManager.clearRideKeyFromCache(rideId);
-    // Unsubscribe from topic
     await FirebaseMessaging.instance.unsubscribeFromTopic('ride_$rideId');
   }
 

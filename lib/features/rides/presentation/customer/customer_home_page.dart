@@ -15,11 +15,12 @@ import 'package:ride_sharing_app/features/rides/presentation/direction_parser.da
 
 import '../../../../app/config/maps_config.dart';
 import '../../../auth/data/auth_repository.dart';
+import '../../../auth/data/user_repository.dart';
+import '../../../notifications/data/notification_service.dart';
 import '../../data/ride_repository.dart';
-import '../../data/encryption_service.dart';
-import '../../data/ride_key_manager.dart';
-import '../../domain/ride_message.dart';
 import '../../domain/ride_request.dart';
+import '../chat/ride_chat_screen.dart';
+import '../widgets/participant_info_card.dart';
 import '../../domain/vehicle_type.dart';
 import '../navigation_hud.dart';
 import '../widgets/ride_location_fields.dart';
@@ -48,9 +49,9 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
 
   final _rideRepo = RideRepository();
   final _authRepo = AuthRepository();
+  final _userRepo = UserRepository();
   final _pickupCtrl = TextEditingController(text: 'Detecting location...');
   final _dropoffCtrl = TextEditingController();
-  final _messageCtrl = TextEditingController();
 
   // FIX #12: TTS for voice navigation
   final FlutterTts _tts = FlutterTts();
@@ -139,7 +140,6 @@ class _CustomerHomePageState extends State<CustomerHomePage> {
     _dropoffCtrl.removeListener(_onDropoffChanged);
     _pickupCtrl.dispose();
     _dropoffCtrl.dispose();
-    _messageCtrl.dispose();
     _mapCtrl?.dispose();
     _rideSub?.cancel();
     _posSub?.cancel();

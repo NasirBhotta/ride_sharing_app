@@ -150,6 +150,14 @@ class _RideRequestCardState extends State<_RideRequestCard>
                 ),
               ],
             ),
+            if (ride.customerInfo != null) ...[
+              const SizedBox(height: 12),
+              _CustomerPreview(
+                info: ride.customerInfo!,
+                isDark: widget.isDark,
+                theme: widget.theme,
+              ),
+            ],
             const SizedBox(height: 14),
             _RoutePreview(
               pickup: ride.pickup,
@@ -198,6 +206,61 @@ class _RideRequestCardState extends State<_RideRequestCard>
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _CustomerPreview extends StatelessWidget {
+  const _CustomerPreview({
+    required this.info,
+    required this.isDark,
+    required this.theme,
+  });
+
+  final RideParticipantInfo info;
+  final bool isDark;
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1E2235) : const Color(0xFFF8F9FC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark ? const Color(0xFF252A3A) : const Color(0xFFE5E9F5),
+        ),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 16,
+            backgroundColor: theme.colorScheme.primary.withOpacity(0.12),
+            child: Icon(
+              Icons.person_rounded,
+              size: 16,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  info.fullName,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (info.phone != null)
+                  Text(info.phone!, style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

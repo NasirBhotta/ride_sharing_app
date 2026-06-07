@@ -4,7 +4,9 @@ import '../../role/domain/user_role.dart';
 import 'role_auth_page.dart';
 
 class AuthLandingPage extends StatelessWidget {
-  const AuthLandingPage({super.key});
+  const AuthLandingPage({super.key, this.showGetStartedCopy = false});
+
+  final bool showGetStartedCopy;
 
   void _openRoleAuth(BuildContext context, UserRole role) {
     Navigator.push(
@@ -55,13 +57,15 @@ class AuthLandingPage extends StatelessWidget {
 
                   // ── Headline ────────────────────────────────────────
                   Text(
-                    'Welcome back',
+                    showGetStartedCopy ? 'Get started' : 'Welcome back',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.headlineMedium,
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Choose how you would like to continue ',
+                    showGetStartedCopy
+                        ? 'Create an account or sign in to continue'
+                        : 'Sign in or create an account to continue',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodyMedium,
                   ),

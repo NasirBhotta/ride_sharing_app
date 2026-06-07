@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import '../../rides/domain/vehicle_type.dart';
+import '../data/document_ocr_parser.dart';
 import '../data/onboarding_repository.dart';
 import 'widgets/onboarding_field_label.dart';
 import 'widgets/onboarding_step_header.dart';
@@ -96,37 +97,75 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
     return File(file.path);
   }
 
-  Future<void> _scanDocument({
-    required bool isLicense,
-  }) async {
+  Future<void> _scanDocument({required bool isLicense}) async {
     final file = await _pickImage(ImageSource.camera);
     if (file == null) return;
+    await _processDocumentImage(file: file, isLicense: isLicense);
+  }
 
+  Future<void> _uploadDocument({required bool isLicense}) async {
+    final file = await _pickImage(ImageSource.gallery);
+    if (file == null || !mounted) return;
+    await _processDocumentImage(file: file, isLicense: isLicense);
+  }
+
+  Future<void> _processDocumentImage({
+    required File file,
+    required bool isLicense,
+  }) async {
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-    final inputImage = InputImage.fromFile(file);
-    final result = await recognizer.processImage(inputImage);
-    await recognizer.close();
+    try {
+      final inputImage = InputImage.fromFile(file);
+      final result = await recognizer.processImage(inputImage);
+      if (!mounted) return;
 
-    final text = result.text.replaceAll('\n', ' ').trim();
-    if (!mounted) return;
-    setState(() {
       if (isLicense) {
-        _licenseImage = file;
-        if (text.isNotEmpty) _licenseNumberCtrl.text = text;
+        final parsed = DocumentOcrParser.parseLicense(result.text);
+        setState(() {
+          _licenseImage = file;
+          if (parsed.licenseNumber != null) {
+            _licenseNumberCtrl.text = parsed.licenseNumber!;
+          }
+          if (parsed.licenseExpiry != null) {
+            _licenseExpiryCtrl.text = parsed.licenseExpiry!;
+          }
+        });
+        _showOcrSnackBar(
+          parsed.filledFields.isEmpty
+              ? 'Document saved. Enter license details manually.'
+              : 'Filled ${parsed.filledFields.join(' and ')}. Please verify.',
+        );
       } else {
-        _idImage = file;
-        if (text.isNotEmpty) _idNumberCtrl.text = text;
+        final parsed = DocumentOcrParser.parseIdCard(result.text);
+        setState(() {
+          _idImage = file;
+          if (parsed.idNumber != null) {
+            _idNumberCtrl.text = parsed.idNumber!;
+          }
+        });
+        _showOcrSnackBar(
+          parsed.filledFields.isEmpty
+              ? 'Document saved. Enter ID number manually.'
+              : 'Filled ${parsed.filledFields.join(' and ')}. Please verify.',
+        );
       }
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          text.isEmpty
-              ? 'Scan completed. Please fill the details.'
-              : 'Scan completed. Please verify the number.',
-        ),
-      ),
-    );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        if (isLicense) {
+          _licenseImage = file;
+        } else {
+          _idImage = file;
+        }
+      });
+      _showOcrSnackBar('Document saved, but scan failed. Enter details manually.');
+    } finally {
+      await recognizer.close();
+    }
+  }
+
+  void _showOcrSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _next() {
@@ -491,11 +530,7 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                           label: 'License photo',
                           image: _licenseImage,
                           onCamera: () => _scanDocument(isLicense: true),
-                          onGallery: () async {
-                            final file = await _pickImage(ImageSource.gallery);
-                            if (file == null || !mounted) return;
-                            setState(() => _licenseImage = file);
-                          },
+                          onGallery: () => _uploadDocument(isLicense: true),
                         ),
                       ],
                     ),
@@ -535,11 +570,7 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                           label: 'ID card photo',
                           image: _idImage,
                           onCamera: () => _scanDocument(isLicense: false),
-                          onGallery: () async {
-                            final file = await _pickImage(ImageSource.gallery);
-                            if (file == null || !mounted) return;
-                            setState(() => _idImage = file);
-                          },
+                          onGallery: () => _uploadDocument(isLicense: false),
                         ),
                       ],
                     ),

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'ride_participant_info.dart';
 import 'vehicle_type.dart';
 
 enum RideStatus { requested, booked, arrived, inProgress, completed, cancelled }
@@ -29,6 +30,8 @@ class RideRequest {
     this.riderEncryptedRideKey,
     this.customerEncryptedRideKey,
     this.messageEncryptionKeyId,
+    this.customerInfo,
+    this.riderInfo,
   });
 
   final String id;
@@ -54,6 +57,8 @@ class RideRequest {
   final String? riderEncryptedRideKey;
   final String? customerEncryptedRideKey;
   final String? messageEncryptionKeyId;
+  final RideParticipantInfo? customerInfo;
+  final RideParticipantInfo? riderInfo;
 
   Map<String, dynamic> toFirestore() {
     return {
@@ -79,6 +84,8 @@ class RideRequest {
       if (riderEncryptedRideKey != null) 'riderEncryptedRideKey': riderEncryptedRideKey,
       if (customerEncryptedRideKey != null) 'customerEncryptedRideKey': customerEncryptedRideKey,
       if (messageEncryptionKeyId != null) 'messageEncryptionKeyId': messageEncryptionKeyId,
+      if (customerInfo != null) 'customerInfo': customerInfo!.toFirestore(),
+      if (riderInfo != null) 'riderInfo': riderInfo!.toFirestore(),
     };
   }
 
@@ -118,6 +125,21 @@ class RideRequest {
       riderEncryptedRideKey: data['riderEncryptedRideKey'] as String?,
       customerEncryptedRideKey: data['customerEncryptedRideKey'] as String?,
       messageEncryptionKeyId: data['messageEncryptionKeyId'] as String?,
+      customerInfo: data['customerInfo'] != null
+          ? RideParticipantInfo.fromMap(
+              data['customerInfo'] as Map<String, dynamic>?,
+            )
+          : null,
+      riderInfo: data['riderInfo'] != null
+          ? RideParticipantInfo.fromMap(
+              data['riderInfo'] as Map<String, dynamic>?,
+            )
+          : null,
     );
   }
+
+  bool get canMessage =>
+      status == RideStatus.booked ||
+      status == RideStatus.arrived ||
+      status == RideStatus.inProgress;
 }

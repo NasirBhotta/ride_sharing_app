@@ -158,6 +158,13 @@ extension _RiderHomePagePanels on _RiderHomePageState {
         const SizedBox(height: 16),
 
         if (_activeRide != null) ...[
+          if (_activeRide!.customerInfo != null) ...[
+            ParticipantInfoCard(
+              info: _activeRide!.customerInfo!,
+              roleLabel: 'Your customer',
+            ),
+            const SizedBox(height: 12),
+          ],
           _InfoRow(
             icon: Icons.my_location_rounded,
             color: const Color(0xFF15BA78),
@@ -174,175 +181,19 @@ extension _RiderHomePagePanels on _RiderHomePageState {
           const SizedBox(height: 16),
         ],
 
-        Row(
-          children: [
-            Icon(
-              Icons.chat_bubble_outline_rounded,
-              size: 16,
-              color: isDark ? const Color(0xFF8B93A7) : const Color(0xFF6B7280),
-            ),
-            const SizedBox(width: 6),
-            Text('Messages', style: theme.textTheme.titleMedium),
-          ],
-        ),
-        const SizedBox(height: 8),
-
-        Container(
-          height: 160,
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E2235) : const Color(0xFFF8F9FC),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: isDark ? const Color(0xFF252A3A) : const Color(0xFFE5E9F5),
-              width: 1.5,
-            ),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(13),
-            child: StreamBuilder<List<RideMessage>>(
-              stream: _rideRepo.watchMessages(_activeRideId!),
-              builder: (ctx, snap) {
-                final msgs = snap.data ?? [];
-                if (msgs.isEmpty)
-                  return Center(
-                    child: Text(
-                      'No messages yet.',
-                      style: theme.textTheme.bodyMedium,
-                    ),
-                  );
-                return ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  itemCount: msgs.length,
-                  itemBuilder: (_, i) {
-                    final msg = msgs[i];
-                    return _buildRiderMessageBubble(msg);
-                  },
-                );
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 10),
-
-        Container(
-          decoration: BoxDecoration(
-            color: isDark ? const Color(0xFF1E2235) : Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: isDark ? const Color(0xFF2D3348) : const Color(0xFFDDE1ED),
-              width: 1.5,
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _messageCtrl,
-                  decoration: InputDecoration(
-                    hintText: 'Message customer…',
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    filled: false,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    hintStyle: TextStyle(
-                      color:
-                          isDark
-                              ? const Color(0xFF8B93A7)
-                              : const Color(0xFF9CA3AF),
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
+        if (_activeRide?.canMessage == true)
+          OutlinedButton.icon(
+            onPressed: _openChat,
+            icon: const Icon(Icons.chat_bubble_outline_rounded),
+            label: const Text('Open messages'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(48),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
               ),
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: IconButton(
-                  onPressed: _sendMessage,
-                  icon: Icon(
-                    Icons.send_rounded,
-                    size: 20,
-                    color: theme.colorScheme.primary,
-                  ),
-                  style: IconButton.styleFrom(
-                    backgroundColor: theme.colorScheme.primary.withOpacity(
-                      0.10,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
       ],
-    );
-  }
-
-  Widget _buildRiderMessageBubble(RideMessage message) {
-    final encryptionService = EncryptionService();
-    final keyManager = RideKeyManager();
-    final user = FirebaseAuth.instance.currentUser;
-    final rideId = _activeRideId;
-    final isRider = message.senderRole == 'rider';
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final theme = Theme.of(context);
-
-    if (user == null || rideId == null) {
-      return Align(
-        alignment: isRider ? Alignment.centerRight : Alignment.centerLeft,
-        child: _messageBubble('[Error decrypting]', isRider, isDark, theme),
-      );
-    }
-
-    final masterKey = encryptionService.deriveKeyFromPassword(user.uid);
-
-    return FutureBuilder<String>(
-      future: keyManager
-          .getRideMessageKey(
-            rideId: rideId,
-            userId: user.uid,
-            userRole: 'rider',
-            masterKey: masterKey,
-          )
-          .then((rideKey) => encryptionService.decrypt(message.encryptedText, rideKey)),
-      builder: (ctx, snap) {
-        String displayText = '[Decrypting...]';
-        if (snap.connectionState == ConnectionState.done) {
-          displayText = snap.hasError ? '[Decryption failed]' : (snap.data ?? '[Unknown error]');
-        }
-        return Align(
-          alignment: isRider ? Alignment.centerRight : Alignment.centerLeft,
-          child: _messageBubble(displayText, isRider, isDark, theme),
-        );
-      },
-    );
-  }
-
-  Widget _messageBubble(String text, bool isRider, bool isDark, ThemeData theme) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.65),
-      decoration: BoxDecoration(
-        color: isRider
-            ? theme.colorScheme.primary.withOpacity(0.15)
-            : (isDark ? const Color(0xFF252A3A) : const Color(0xFFECEFF7)),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        text,
-        style: theme.textTheme.bodySmall?.copyWith(fontSize: 13),
-      ),
     );
   }
 
