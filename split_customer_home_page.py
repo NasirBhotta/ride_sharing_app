@@ -10,7 +10,7 @@ def add_part(source: str, part_name: str) -> str:
     directive = f"part '{part_name}';\n"
     if directive in source:
         return source
-    marker = "import 'widgets/vehicle_option_card.dart';\n\n"
+    marker = "import '../widgets/vehicle_option_card.dart';\n\n"
     return source.replace(marker, marker + directive, 1)
 
 
