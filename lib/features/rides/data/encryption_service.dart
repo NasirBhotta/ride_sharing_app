@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:pointycastle/export.dart';
 
@@ -14,11 +15,17 @@ class EncryptionService {
       throw ArgumentError('Key must be $keySize bytes (256 bits)');
     }
 
-    final random = SecureRandom('AES/GCM');
-    final nonce = random.nextBytes(nonceSize);
+    final random = Random.secure();
+    final nonce = Uint8List(nonceSize);
+    for (int i = 0; i < nonceSize; i++) {
+      nonce[i] = random.nextInt(256);
+    }
 
     final cipher = GCMBlockCipher(AESEngine());
-    cipher.init(true, AEADParameters(KeyParameter(key), tagSize * 8, nonce, Uint8List(0)));
+    cipher.init(
+      true,
+      AEADParameters(KeyParameter(key), tagSize * 8, nonce, Uint8List(0)),
+    );
 
     final plaintextBytes = utf8.encode(plaintext);
     final ciphertext = cipher.process(plaintextBytes);
@@ -49,7 +56,10 @@ class EncryptionService {
       final ciphertext = combined.sublist(nonceSize);
 
       final cipher = GCMBlockCipher(AESEngine());
-      cipher.init(false, AEADParameters(KeyParameter(key), tagSize * 8, nonce, Uint8List(0)));
+      cipher.init(
+        false,
+        AEADParameters(KeyParameter(key), tagSize * 8, nonce, Uint8List(0)),
+      );
 
       final plaintext = cipher.process(ciphertext);
       return utf8.decode(plaintext);
@@ -60,8 +70,12 @@ class EncryptionService {
 
   /// Generates a random 32-byte key suitable for AES-256
   Uint8List generateRandomKey() {
-    final random = SecureRandom('SHA-256/PRNG');
-    return random.nextBytes(keySize);
+    final random = Random.secure();
+    final key = Uint8List(keySize);
+    for (int i = 0; i < keySize; i++) {
+      key[i] = random.nextInt(256);
+    }
+    return key;
   }
 
   /// Derives a key from password using PBKDF2
