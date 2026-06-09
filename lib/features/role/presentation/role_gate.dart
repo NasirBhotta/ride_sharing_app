@@ -18,6 +18,8 @@ class RoleGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
+
+    print('RoleGate: current user = $user');
     if (user == null) {
       return const AuthLandingPage();
     }

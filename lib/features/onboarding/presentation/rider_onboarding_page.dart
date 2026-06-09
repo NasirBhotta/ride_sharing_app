@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:ride_sharing_app/features/auth/presentation/auth_landing_page.dart';
 
 import '../../rides/domain/vehicle_type.dart';
 import '../data/document_ocr_parser.dart';
@@ -70,7 +71,8 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
       lastDate: latest,
     );
     if (picked == null) return;
-    ctrl.text = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-'
+    ctrl.text =
+        '${picked.year}-${picked.month.toString().padLeft(2, '0')}-'
         '${picked.day.toString().padLeft(2, '0')}';
   }
 
@@ -84,15 +86,13 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
       lastDate: DateTime(now.year + 15),
     );
     if (picked == null) return;
-    ctrl.text = '${picked.year}-${picked.month.toString().padLeft(2, '0')}-'
+    ctrl.text =
+        '${picked.year}-${picked.month.toString().padLeft(2, '0')}-'
         '${picked.day.toString().padLeft(2, '0')}';
   }
 
   Future<File?> _pickImage(ImageSource source) async {
-    final file = await _picker.pickImage(
-      source: source,
-      imageQuality: 80,
-    );
+    final file = await _picker.pickImage(source: source, imageQuality: 80);
     if (file == null) return null;
     return File(file.path);
   }
@@ -158,14 +158,18 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
           _idImage = file;
         }
       });
-      _showOcrSnackBar('Document saved, but scan failed. Enter details manually.');
+      _showOcrSnackBar(
+        'Document saved, but scan failed. Enter details manually.',
+      );
     } finally {
       await recognizer.close();
     }
   }
 
   void _showOcrSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _next() {
@@ -240,9 +244,9 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save profile: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not save profile: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -251,7 +255,19 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Rider onboarding')),
+      appBar: AppBar(
+        title: const Text('Rider onboarding'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(builder: (_) => AuthLandingPage()),
+              );
+            },
+            child: Text("auth", style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Column(
           children: [
@@ -324,7 +340,10 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                             hintText: 'San Francisco',
                             prefixIcon: Padding(
                               padding: EdgeInsets.only(left: 14, right: 10),
-                              child: Icon(Icons.location_city_outlined, size: 20),
+                              child: Icon(
+                                Icons.location_city_outlined,
+                                size: 20,
+                              ),
                             ),
                             prefixIconConstraints: BoxConstraints(
                               minWidth: 0,
@@ -392,7 +411,10 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                           decoration: const InputDecoration(
                             prefixIcon: Padding(
                               padding: EdgeInsets.only(left: 14, right: 10),
-                              child: Icon(Icons.directions_bike_outlined, size: 20),
+                              child: Icon(
+                                Icons.directions_bike_outlined,
+                                size: 20,
+                              ),
                             ),
                             prefixIconConstraints: BoxConstraints(
                               minWidth: 0,
@@ -455,7 +477,10 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                             hintText: 'ABC-1234',
                             prefixIcon: Padding(
                               padding: EdgeInsets.only(left: 14, right: 10),
-                              child: Icon(Icons.confirmation_number_outlined, size: 20),
+                              child: Icon(
+                                Icons.confirmation_number_outlined,
+                                size: 20,
+                              ),
                             ),
                             prefixIconConstraints: BoxConstraints(
                               minWidth: 0,
@@ -726,7 +751,11 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
                   )
                   : ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: Image.file(image, fit: BoxFit.cover, width: double.infinity),
+                    child: Image.file(
+                      image,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                    ),
                   ),
         ),
       ],
@@ -743,9 +772,9 @@ class _RiderOnboardingPageState extends State<RiderOnboardingPage> {
             flex: 2,
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
             ),
           ),
           Expanded(

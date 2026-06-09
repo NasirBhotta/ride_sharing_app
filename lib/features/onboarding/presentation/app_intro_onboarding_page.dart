@@ -20,7 +20,8 @@ class _AppIntroOnboardingPageState extends State<AppIntroOnboardingPage> {
     _IntroSlide(
       icon: Icons.local_taxi_rounded,
       title: 'Book a ride in seconds',
-      body: 'Set your pickup and dropoff, choose a vehicle, and request a ride nearby.',
+      body:
+          'Set your pickup and dropoff, choose a vehicle, and request a ride nearby.',
     ),
     _IntroSlide(
       icon: Icons.near_me_rounded,
@@ -73,10 +74,7 @@ class _AppIntroOnboardingPageState extends State<AppIntroOnboardingPage> {
           children: [
             Align(
               alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: _finish,
-                child: const Text('Skip'),
-              ),
+              child: TextButton(onPressed: _finish, child: const Text('Skip')),
             ),
             Expanded(
               child: PageView.builder(
@@ -137,9 +135,10 @@ class _AppIntroOnboardingPageState extends State<AppIntroOnboardingPage> {
                   width: i == _page ? 22 : 8,
                   height: 8,
                   decoration: BoxDecoration(
-                    color: i == _page
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.primary.withOpacity(0.25),
+                    color:
+                        i == _page
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.primary.withOpacity(0.25),
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
